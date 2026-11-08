@@ -1053,8 +1053,11 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             bool open = ImGui::BeginTabItem(lbl, NULL, f);
             ImGui::PopStyleColor(lit ? 3 : 1);
             if (focus_here) {  // the controller's cursor starts on this tab (SetKeyboardFocusHere skips tabs: no tab stop)
-                ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
-                ImGui::SetNavCursorVisible(true);
+                ImGuiID id = ImGui::GetItemID();
+                if (id != 0) {
+                    ImGui::SetFocusID(id, ImGui::GetCurrentWindow());
+                    ImGui::SetNavCursorVisible(true);
+                }
                 // a few frames: the page's child window appearing makes ImGui pick its first widget once it's laid out
                 if (++g_focus_frames >= 4) g_focus_tab = -99, g_focus_frames = 0;
                 else g_focus_tab = t.id;

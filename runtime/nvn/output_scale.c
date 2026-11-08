@@ -12,8 +12,12 @@
 #include <stdlib.h>
 
 #include "../hle.h"
+#include "../platform.h"
 #include "../settings.h"
 #include "output_scale.h"
+#ifdef __ANDROID__
+#include <string.h>
+#endif
 
 #define MAX_TEX 16384.0
 
@@ -41,6 +45,18 @@ static void dyn_update(double now, double gpu_ms) {
     if (now < g_dyn_cool_until) return;
     double prev = g_dyn;
 #ifdef __ANDROID__
+    PlatDeviceStats ds;
+    memset(&ds, 0, sizeof ds);
+    plat_device_stats(&ds);
+    bool thermal_throttle = ds.thermal >= 2 || (ds.headroom > 0.0f && ds.headroom >= 0.95f);
+    if (thermal_throttle) {
+        double thermal_cap = (ds.thermal >= 3 || ds.headroom >= 1.0f) ? 0.50 : 0.60;
+        if (g_dyn > thermal_cap) {
+            g_dyn = thermal_cap;
+            g_dyn_cool_until = now + 5.0;
+            g_dyn_good = 0;
+        }
+    }
     // (Frame rate 30: its frames take 33.3 ms on target - against 60's budget each one looked slow, and the
     // resolution went down to its floor however much room the GPU had)
     double budget = g_settings.fps_mode == 1 ? 2.0 : 1.0;
@@ -75,6 +91,9 @@ static void dyn_update(double now, double gpu_ms) {
         // (budget: 1 but on Android's Frame rate 30)
         bool room = avg_gpu >= 0 ? avg_gpu < 10.5 * budget && g_dyn_good >= 4
                                  : now >= g_dyn_probe_at && g_dyn_good >= 2 * (int)g_dyn_probe_wait;
+#ifdef __ANDROID__
+        if (thermal_throttle) room = false;
+#endif
         if (room) { g_dyn = fmin(1.0, g_dyn + 0.05); g_dyn_good = 0; g_dyn_last_raise = now; g_dyn_probe_at = now + g_dyn_probe_wait; }
     }
     g_dyn = round(g_dyn * 20) / 20;

@@ -14,13 +14,13 @@ val releaseKey: File = File(System.getProperty("user.home"), ".lasrecomp/keystor
 
 android {
     namespace = "com.lasrecomp"
-    compileSdk = 36
-    ndkVersion = "30.0.16248370"
+    compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.lasrecomp.android"
         minSdk = 30
-        targetSdk = 36
+        targetSdk = 35
         versionCode = 26
         versionName = "0.5.10"
         ndk {
@@ -30,6 +30,9 @@ android {
             cmake {
                 arguments += "-DLAS_GEN_DIR=${gen.get().asFile.resolve("inc").absolutePath.replace('\\', '/')}"
                 arguments += "-DLAS_APP_VERSION=$versionName"  // (the start screen shows it: launcher.mm)
+                arguments += "-DNDEBUG=1"
+                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+                arguments += "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384"
             }
         }
     }
@@ -37,7 +40,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.30.4"
+            version = "3.22.1"
         }
     }
 

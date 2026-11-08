@@ -13,7 +13,7 @@ DEV_TMP=/data/local/tmp/lasrecomp
 
 SDK=${ANDROID_HOME:-${LOCALAPPDATA:-$HOME}/Android/Sdk}
 SDK=${SDK//\\//}
-NDK=${ANDROID_NDK:-$SDK/ndk/30.0.16248370}
+NDK=${ANDROID_NDK:-$SDK/ndk/27.2.12479018}
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) HOST=windows-x86_64; EXE=.exe ;; Darwin) HOST=darwin-x86_64; EXE= ;; *) HOST=linux-x86_64; EXE= ;; esac
 CC=$NDK/toolchains/llvm/prebuilt/$HOST/bin/clang$EXE
 

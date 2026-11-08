@@ -4,6 +4,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(lasrecomp C CXX ASM)
 
+add_link_options("-Wl,-z,max-page-size=16384")
+
 set(R ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../..)   # the repository
 get_filename_component(R ${R} ABSOLUTE)
 set(DEPS ${R}/android/deps/out)                        # android/deps/build_deps.sh
@@ -52,11 +54,13 @@ file(GLOB RT_SRC CONFIGURE_DEPENDS ${R}/runtime/*.c ${R}/runtime/hle/*.c ${R}/ru
 set(HAVE_FFMPEG FALSE)
 if(EXISTS ${DEPS}/lib/libavformat.so)
     set(HAVE_FFMPEG TRUE)
+    message(STATUS "FFmpeg found: enabling movie.c and linking avcodec/avformat/avutil/swscale")
     foreach(l avcodec avformat avutil swscale)
         add_library(${l} SHARED IMPORTED)
         set_target_properties(${l} PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/lib${l}.so)
     endforeach()
 else()
+    message(WARNING "FFmpeg NOT found in ${DEPS}/lib: removing movie.c")
     list(REMOVE_ITEM RT_SRC ${R}/runtime/hle/movie.c)
 endif()
 file(GLOB VK_SRC CONFIGURE_DEPENDS ${R}/runtime/nvn/vulkan/*.c ${R}/runtime/nvn/vulkan/*.cpp)

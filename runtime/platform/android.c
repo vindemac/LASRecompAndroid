@@ -675,15 +675,24 @@ typedef struct APerformanceHintSession APerformanceHintSession;
 // minute or two every time (2026-10-16, four runs): a job worker called into a job the main thread had already moved
 // on from - a race in the game's job system that a main thread much faster than its workers wins (on the Switch every
 // core runs at the same clock).
-static cpu_set_t g_all_cores;
-static bool g_pinned;
+// CPU topology and thread affinity for asymmetric SoCs (Snapdragon 8 Elite / Oryon):
+// - Prime cores (Oryon Prime @ 4.47 GHz): Main Game Thread & Vulkan Render Submission Thread
+// - Performance cores (Oryon Performance @ 3.53 GHz): Worker Threads (compilation, translation, audio, HLE jobs)
+static cpu_set_t g_all_cores, g_prime_cores, g_perf_cores;
+static bool g_topo_init, g_has_prime, g_has_perf;
+static bool g_is_snapdragon_8_elite;
+static pthread_mutex_t g_topo_lock = PTHREAD_MUTEX_INITIALIZER;
 
-void plat_thread_unpin(void) {
-    if (g_pinned) sched_setaffinity(0, sizeof g_all_cores, &g_all_cores);
-}
-
-static void pin_to_fastest_cores(void) {
-    if (!getenv("LARECOMP_PIN")) return;
+static void topo_init(void) {
+    pthread_mutex_lock(&g_topo_lock);
+    if (g_topo_init) {
+        pthread_mutex_unlock(&g_topo_lock);
+        return;
+    }
+    g_topo_init = true;
+    CPU_ZERO(&g_all_cores);
+    CPU_ZERO(&g_prime_cores);
+    CPU_ZERO(&g_perf_cores);
     long best = 0, mhz[CPU_SETSIZE] = {0};
     int n = 0;
     for (int c = 0; c < CPU_SETSIZE && c < 64; c++) {
@@ -696,19 +705,51 @@ static void pin_to_fastest_cores(void) {
         if (mhz[c] > best) best = mhz[c];
         n = c + 1;
     }
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    int k = 0;
-    for (int c = 0; c < n; c++)
-        if (mhz[c] == best) {
-            CPU_SET(c, &set);
-            k++;
+    for (int c = 0; c < n; c++) {
+        CPU_SET(c, &g_all_cores);
+        if (mhz[c] == best && best > 0) {
+            CPU_SET(c, &g_prime_cores);
+        } else if (mhz[c] > 0) {
+            CPU_SET(c, &g_perf_cores);
         }
-    if (!best || k == 0 || k == n) return;  // (one cluster: nothing to pick)
-    if (sched_getaffinity(0, sizeof g_all_cores, &g_all_cores)) return;
-    g_pinned = true;  // (before: a thread started from here from now on goes back to g_all_cores)
-    int r = sched_setaffinity(0, sizeof set, &set);
-    LOG("[android] presenting thread on the %d fastest cores (%ld MHz): %s\n", k, best / 1000, r ? strerror(errno) : "ok");
+    }
+    int prime_count = CPU_COUNT(&g_prime_cores);
+    int perf_count = CPU_COUNT(&g_perf_cores);
+    g_has_prime = (prime_count > 0 && prime_count < n);
+    g_has_perf = (perf_count > 0);
+    // Snapdragon 8 Elite (SM8750): 8 Oryon cores (2 Prime @ >4 GHz, 6 Perf @ >3 GHz)
+    g_is_snapdragon_8_elite = (n == 8 && prime_count == 2 && perf_count == 6 && best >= 4000000);
+    LOG("[android] cpu topology: %d cores, %d prime (%ld MHz), %d perf, Snapdragon 8 Elite: %s\n",
+        n, prime_count, best / 1000, perf_count, g_is_snapdragon_8_elite ? "yes" : "no");
+    pthread_mutex_unlock(&g_topo_lock);
+}
+
+bool plat_is_snapdragon_8_elite(void) {
+    topo_init();
+    return g_is_snapdragon_8_elite;
+}
+
+void plat_thread_pin_prime(void) {
+    topo_init();
+    if (!g_has_prime || getenv("LARECOMP_NO_PIN")) return;
+    int r = sched_setaffinity(0, sizeof g_prime_cores, &g_prime_cores);
+    if (r != 0) LOG("[android] pin prime failed: %s\n", strerror(errno));
+}
+
+void plat_thread_pin_workers(void) {
+    topo_init();
+    if (!g_has_perf || getenv("LARECOMP_NO_PIN")) return;
+    int r = sched_setaffinity(0, sizeof g_perf_cores, &g_perf_cores);
+    if (r != 0) LOG("[android] pin perf workers failed: %s\n", strerror(errno));
+}
+
+void plat_thread_unpin(void) {
+    topo_init();
+    sched_setaffinity(0, sizeof g_all_cores, &g_all_cores);
+}
+
+static void pin_to_fastest_cores(void) {
+    plat_thread_pin_prime();
 }
 
 // One session for both threads by default (the presenting thread and the render thread; LARECOMP_ADPF_SPLIT=1 for

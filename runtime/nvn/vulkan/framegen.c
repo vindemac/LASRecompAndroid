@@ -133,6 +133,8 @@ static const char kWarp[] =
 // a.x: flags 1 / 2 as kWarp's; b.zw: the depth's scale. Out: (D c).x, .y, .w and the HUD's weight
 static const char kPrep[] =
     "#version 450\n"
+    "precision mediump float;\n"
+    "precision mediump int;\n"
     "layout(set = 0, binding = 0) uniform sampler2D depthT;\n"
     "layout(set = 0, binding = 1) uniform sampler2D hudMask;\n"
     "layout(location = 0) in vec2 uv;\n"
@@ -158,6 +160,8 @@ static const char kPrep[] =
 // the HUD mask: each texel covers 4x4 pixels of the presented picture, set where it differs from the scene's copy
 static const char kMask[] =
     "#version 450\n"
+    "precision mediump float;\n"
+    "precision mediump int;\n"
     "layout(set = 0, binding = 0) uniform sampler2D scene;\n"
     "layout(set = 0, binding = 1) uniform sampler2D fin;\n"
     "layout(location = 0) in vec2 uv;\n"
@@ -176,6 +180,8 @@ static const char kMask[] =
 // against the finished picture's (the four bilinear taps of the block)
 static const char kMaskQ[] =
     "#version 450\n"
+    "precision mediump float;\n"
+    "precision mediump int;\n"
     "layout(set = 0, binding = 0) uniform sampler2D scene;\n"
     "layout(set = 0, binding = 1) uniform sampler2D fin;\n"
     "layout(location = 0) in vec2 uv;\n"
@@ -198,6 +204,8 @@ static const char kMaskQ[] =
 // or the whole one with LARECOMP_FG_SCENEQ=0 - four taps cover both)
 static const char kDown[] =
     "#version 450\n"
+    "precision mediump float;\n"
+    "precision mediump int;\n"
     "layout(set = 0, binding = 0) uniform sampler2D scene;\n"
     "layout(location = 0) in vec2 uv;\n"
     "layout(location = 0) out vec4 o;\n"
@@ -214,6 +222,8 @@ static const char kDown[] =
 // a: y flip (the warp's flag 1), depth in [-1, 1]; b.zw: the depth's content scale
 static const char kFlow[] =
     "#version 450\n"
+    "precision mediump float;\n"
+    "precision mediump int;\n"
     "layout(set = 0, binding = 0) uniform sampler2D curImg;\n"
     "layout(set = 0, binding = 1) uniform sampler2D prevImg;\n"
     "layout(set = 0, binding = 2) uniform sampler2D depthT;\n"
@@ -268,6 +278,8 @@ static const char kFlow[] =
 // blocks (water, flicker) are dropped
 static const char kFilter[] =
     "#version 450\n"
+    "precision mediump float;\n"
+    "precision mediump int;\n"
     "layout(set = 0, binding = 0) uniform sampler2D flowIn;\n"
     "layout(location = 0) in vec2 uv;\n"
     "layout(location = 0) out vec4 o;\n"

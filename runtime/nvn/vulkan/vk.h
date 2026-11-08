@@ -59,6 +59,9 @@ typedef struct {
     bool bda;                     // bufferDeviceAddress on: the placed heap can be reached by pointer (exec.c gmem_bda)
     bool exec_stats;              // (Android, LARECOMP_SHADER_STATS=1) the compiler's statistics of each pipeline, logged
     uint32_t api;                 // the device's Vulkan version as used: 1.3, or 1.1 / 1.2 with extensions (device.c)
+    bool is_adreno_830;           // Snapdragon 8 Elite / Adreno 830 (S25 Ultra baseline)
+    bool has_shading_rate;        // VK_KHR_fragment_shading_rate supported
+    VkSurfaceTransformFlagBitsKHR pre_transform; // Pre-rotation transform for swapchain
 #endif
     // window
     VkSurfaceKHR surface;

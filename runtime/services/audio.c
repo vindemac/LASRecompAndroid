@@ -624,7 +624,7 @@ static void wav_header(FILE *f, uint32_t bytes) {
 
 static void *renderer_tick(void *arg) {
 #ifdef __ANDROID__
-    plat_thread_unpin();  // (not the presenting thread's fast cores: platform.h)
+    plat_thread_pin_workers();  // Performance cores for audio rendering
 #endif
     Renderer *r = arg;
     float out[2 * 4096];
@@ -1112,7 +1112,7 @@ void audio_stop_all(void) { audio_reset(); }
 // stream plays the role of the hardware queue. Without a device, buffers are released in real time.
 static void *audout_thread(void *arg) {
 #ifdef __ANDROID__
-    plat_thread_unpin();  // (not the presenting thread's fast cores: platform.h)
+    plat_thread_pin_workers();  // Performance cores for audio output
 #endif
     AudioOut *a = arg;
     uint32_t ch = a->channels ? a->channels : 2;

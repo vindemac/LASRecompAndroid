@@ -1029,6 +1029,9 @@ static pthread_cond_t jobs_cond = PTHREAD_COND_INITIALIZER;
 
 static void *worker(void *a) {
     (void)a;
+#ifdef __ANDROID__
+    plat_thread_pin_workers();
+#endif
     for (;;) {
         pthread_mutex_lock(&jobs_lock);
         while (!jobs_head) pthread_cond_wait(&jobs_cond, &jobs_lock);
@@ -1059,6 +1062,9 @@ static pthread_mutex_t tjobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t tjobs_cond = PTHREAD_COND_INITIALIZER;
 static void *translator(void *a) {
     (void)a;
+#ifdef __ANDROID__
+    plat_thread_pin_workers();
+#endif
     for (;;) {
         pthread_mutex_lock(&tjobs_lock);
         while (!tjobs_head) pthread_cond_wait(&tjobs_cond, &tjobs_lock);
@@ -1758,6 +1764,9 @@ static pthread_mutex_t pjobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pjobs_cond = PTHREAD_COND_INITIALIZER;
 static void *prep_worker(void *a) {
     (void)a;
+#ifdef __ANDROID__
+    plat_thread_pin_workers();
+#endif
     for (;;) {
         pthread_mutex_lock(&pjobs_lock);
         while (!pjobs_head) pthread_cond_wait(&pjobs_cond, &pjobs_lock);
@@ -3135,13 +3144,19 @@ bool vk_heap_place(uint64_t size) {
     vkGetBufferMemoryRequirements(g_vk.dev, buf, &mr);
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    int type = -1;  // host-visible and coherent (the CPU writes, the GPU reads and writes); cached when there is one
+    int type = -1;  // host-visible and coherent (the CPU writes, the GPU reads and writes); cached and device-local when there is one
     const VkMemoryPropertyFlags need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
         VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
         if (!(mr.memoryTypeBits & (1u << i)) || (f & need) != need) continue;
-        if (type < 0 || (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) type = (int)i;
-        if (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) break;
+        if (type < 0) {
+            type = (int)i;
+        } else {
+            VkMemoryPropertyFlags cur = mp.memoryTypes[type].propertyFlags;
+            int cur_score = ((cur & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? 2 : 0) + ((cur & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? 1 : 0);
+            int new_score = ((f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? 2 : 0) + ((f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? 1 : 0);
+            if (new_score > cur_score) type = (int)i;
+        }
     }
     VkDeviceMemory mem = VK_NULL_HANDLE;
     VkMemoryAllocateFlagsInfo af = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
@@ -5657,11 +5672,18 @@ static TexBackend *post_image(int i, uint32_t w, uint32_t h) {
         d->mem = VK_NULL_HANDLE;
     }
     if (!d->image) {
+        VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+#ifdef __ANDROID__
+        if (i < 2) usage |= VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+#endif
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                                 .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+                                .usage = usage};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+#ifdef __ANDROID__
+        if (i < 2) ai.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+#endif
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
         d->format = VK_FORMAT_R8G8B8A8_UNORM; d->width = w; d->height = h; d->depth = 1; d->layers = 1; d->levels = 1;
         d->samples = 1; d->aspect = VK_IMAGE_ASPECT_COLOR_BIT; d->base_type = VK_IMAGE_VIEW_TYPE_2D;
@@ -5820,7 +5842,11 @@ void vk_present_backdrop(VkCommandBuffer cb, float x, float y, float w, float h,
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
     VkViewport vp = {x, y, w, h, 0, 1};
     vkCmdSetViewport(cb, 0, 1, &vp);
-    float pv[8] = {flip ? 1.0f : 0.0f, 0, light, 0, uvr[0], uvr[1], uvr[2], uvr[3]};
+    float rot = 0.0f;
+    if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) rot = 1.0f;
+    else if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR) rot = 2.0f;
+    else if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) rot = 3.0f;
+    float pv[8] = {flip ? 1.0f : 0.0f, rot, light, 0, uvr[0], uvr[1], uvr[2], uvr[3]};
     vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
     vkCmdDraw(cb, 3, 1, 0, 0);
     VkViewport full = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};

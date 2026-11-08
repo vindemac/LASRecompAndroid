@@ -251,11 +251,17 @@ void kernel_blocking_end(void) {
 }
 #endif
 
+static KThread *g_main_thread;
+
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
 #ifdef __ANDROID__
-    plat_thread_unpin();  // (not the presenting thread's fast cores: platform.h)
+    if (t == g_main_thread) {
+        plat_thread_pin_prime();
+    } else {
+        plat_thread_pin_workers();
+    }
 #endif
     crash_handler_install();
     rt_set_fpcr(0);
@@ -313,6 +319,7 @@ KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio
     region_add(stack, stack_size, 0xB, 3);
     KThread *t = thread_new(entry, 0, stack + stack_size, prio, 0);
     t->handle = kernel_new_handle(&t->obj);
+    g_main_thread = t;
     return t;
 }
 

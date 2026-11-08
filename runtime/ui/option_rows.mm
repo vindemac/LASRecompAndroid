@@ -93,9 +93,12 @@ static void touch_end() {
     // turned a slider into a text field, where left / right did nothing and B only ended the typing)
     if (g_take_first) {
         g_take_first = false;
-        ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
-        ImGui::SetNavCursorVisible(true);
-        ImGui::SetScrollHereY(0);
+        ImGuiID id = ImGui::GetItemID();
+        if (id != 0) {
+            ImGui::SetFocusID(id, ImGui::GetCurrentWindow());
+            ImGui::SetNavCursorVisible(true);
+            ImGui::SetScrollHereY(0);
+        }
     }
     if (ImGui::IsItemFocused()) ui_log_nav(g_row_label);
     ImGui::EndDisabled();
@@ -147,9 +150,12 @@ static int row(const char *label, const std::string &value, bool changed, const 
     ImGui::PopStyleColor();
     if (g_take_first) {  // (opt_focus_first)
         g_take_first = false;
-        ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
-        ImGui::SetNavCursorVisible(true);
-        ImGui::SetScrollHereY(0);
+        ImGuiID id = ImGui::GetItemID();
+        if (id != 0) {
+            ImGui::SetFocusID(id, ImGui::GetCurrentWindow());
+            ImGui::SetNavCursorVisible(true);
+            ImGui::SetScrollHereY(0);
+        }
     }
     bool off = g_next_disabled;  // (greyed out: still selectable, so its description shows, but it can't change)
     g_next_disabled = false;

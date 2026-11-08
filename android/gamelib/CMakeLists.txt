@@ -5,6 +5,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(lasgame C)
 
+add_link_options("-Wl,-z,max-page-size=16384")
+
 set(R ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 get_filename_component(R ${R} ABSOLUTE)
 include(${R}/android/gamelib_id.cmake)

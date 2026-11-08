@@ -13,8 +13,8 @@ W=$R/android/out/gamelib-build
 
 SDK=${ANDROID_HOME:-${LOCALAPPDATA:-$HOME}/Android/Sdk}
 SDK=${SDK//\\//}
-NDK=${ANDROID_NDK:-$SDK/ndk/30.0.16248370}
-CMAKE_DIR=$SDK/cmake/3.30.4/bin
+NDK=${ANDROID_NDK:-$SDK/ndk/27.2.12479018}
+CMAKE_DIR=${CMAKE_DIR:-$SDK/cmake/3.22.1/bin}
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe; PY=tools/venv/Scripts/python.exe ;; *) EXE=; PY=tools/venv/bin/python ;; esac
 
 LIBMAIN=$(ls -t "$R"/android/lasrecomp/app/build/intermediates/cxx/*/*/obj/arm64-v8a/libmain.so 2>/dev/null | head -1 || true)
@@ -27,6 +27,7 @@ fi
 
 "$CMAKE_DIR/cmake$EXE" -S "$R/android/gamelib" -B "$W" -G Ninja -DCMAKE_MAKE_PROGRAM="$CMAKE_DIR/ninja$EXE" \
     -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30 \
+    -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON -DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 \
     -DCMAKE_BUILD_TYPE=Release -DLAS_GEN="$GEN" -DLAS_LIBMAIN="$LIBMAIN"
 "$CMAKE_DIR/cmake$EXE" --build "$W" -j"$(nproc 2>/dev/null || echo 8)"
 mkdir -p "$OUT"

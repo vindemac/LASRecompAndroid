@@ -9,10 +9,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 P=$PWD/out
-NDK=${ANDROID_NDK_LINUX:-$HOME/android-ndk-r30}
+NDK=${ANDROID_NDK_LINUX:-/mnt/hd_externo/home/vinicius/ssd-redirecionado/piano-android/sdk/ndk/27.2.12479018}
 W=$HOME/lasrecomp-ffmpeg
 API=30
 mkdir -p "$W" "$P/include" "$P/lib"
+
+if [ ! -x "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
+    NDK=${ANDROID_NDK:-$HOME/android-ndk-r30}
+fi
 
 if [ ! -x "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
     curl -fsSL -o "$W/ndk.zip" https://dl.google.com/android/repository/android-ndk-r30-linux.zip
@@ -37,8 +41,12 @@ fi
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 
 if [ ! -f "$W/ffmpeg-9.0.2.tar.xz" ]; then
-    curl -fsSL -o "$W/ffmpeg-9.0.2.tar.xz.part" https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
-    mv "$W/ffmpeg-9.0.2.tar.xz.part" "$W/ffmpeg-9.0.2.tar.xz"
+    if [ -f "/mnt/hd_externo/Projetos/Melda/build/linux/src/ffmpeg-9.0.2.tar.xz" ]; then
+        cp "/mnt/hd_externo/Projetos/Melda/build/linux/src/ffmpeg-9.0.2.tar.xz" "$W/"
+    else
+        curl -fsSL -o "$W/ffmpeg-9.0.2.tar.xz.part" https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+        mv "$W/ffmpeg-9.0.2.tar.xz.part" "$W/ffmpeg-9.0.2.tar.xz"
+    fi
 fi
 (cd "$W" && echo "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e  ffmpeg-9.0.2.tar.xz" | sha256sum -c --quiet)
 rm -rf "$W/ffmpeg" "$W/prefix" && mkdir -p "$W/ffmpeg" && tar -xf "$W/ffmpeg-9.0.2.tar.xz" -C "$W/ffmpeg" --strip-components 1
@@ -47,6 +55,8 @@ cd "$W/ffmpeg"
 ./configure --prefix="$W/prefix" --enable-cross-compile --target-os=android --arch=aarch64 --cpu=armv8-a \
     --cc="$TC/aarch64-linux-android$API-clang" --cxx="$TC/aarch64-linux-android$API-clang++" \
     --nm="$TC/llvm-nm" --ar="$TC/llvm-ar" --ranlib="$TC/llvm-ranlib" --strip="$TC/llvm-strip" \
+    --extra-cflags="-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" \
+    --extra-ldflags="-Wl,-z,max-page-size=16384" \
     --enable-shared --disable-static --enable-pic \
     --disable-autodetect --disable-programs --disable-doc --disable-network --disable-avdevice --disable-avfilter \
     --disable-swresample --disable-everything \

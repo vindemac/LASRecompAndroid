@@ -113,9 +113,18 @@ typedef struct {
 } PlatAdpfStats;
 void plat_adpf_stats(PlatAdpfStats *out);
 #ifdef __ANDROID__
-// A new thread back on every core: threads inherit the creating thread's affinity, and the presenting thread is
-// pinned to the fastest cores (platform/android.c)
+// Thread affinity for asymmetric topologies (Snapdragon 8 Elite / Oryon):
+// - Prime cores (6..7 @ 4.47 GHz): main presenting thread & Vulkan submission thread
+// - Performance cores (0..5 @ 3.53 GHz): worker threads (shaders, pipelines, audio, HLE jobs)
+void plat_thread_pin_prime(void);
+void plat_thread_pin_workers(void);
 void plat_thread_unpin(void);
+bool plat_is_snapdragon_8_elite(void);
+#else
+static inline void plat_thread_pin_prime(void) {}
+static inline void plat_thread_pin_workers(void) {}
+static inline void plat_thread_unpin(void) {}
+static inline bool plat_is_snapdragon_8_elite(void) { return false; }
 #endif
 #endif
 

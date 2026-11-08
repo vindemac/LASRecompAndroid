@@ -304,6 +304,7 @@ static float extract_progress(void) {
 static bool build_game_code(void) {
 #ifdef __ANDROID__
     if (native_wanted()) return true;  // (the game's own code runs as it is)
+    if (gamelib_present(g_root.c_str())) return true;  // (pre-built lasgame.so already in place)
 #endif
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
     GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1};
@@ -2314,7 +2315,8 @@ extern "C" void launcher_run(const char *root) {
                 if (seen_frame != ImGui::GetFrameCount() - 1) focus_first = 4;
                 seen_frame = ImGui::GetFrameCount();
                 auto first_row = [&] {
-                    if (focus_first > 0 && focus_first--) ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+                    ImGuiID id = ImGui::GetItemID();
+                    if (id != 0 && focus_first > 0 && focus_first--) ImGui::SetFocusID(id, ImGui::GetCurrentWindow());
                 };
                 opt_begin("##files", sc);
                 if (!ready) {

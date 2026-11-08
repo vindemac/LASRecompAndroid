@@ -415,6 +415,32 @@ void vk_device_fault_report(void) {
             (unsigned long long)vend[i].vendorFaultData);
 }
 
+#ifdef __ANDROID__
+// Driver compatibility's Automatic (settings.h gpu_heap / turnip_lrz): the fastest paths on the Adreno 8xx GPUs they
+// were made on, the compatible ones elsewhere (an Adreno 750 drew text and colors wrong with them). name: Vulkan's
+// "Adreno (TM) 830v1" or the kernel's "Adreno830v2".
+static int adreno_number(const char *name) {
+    const char *a = name ? strstr(name, "Adreno") : NULL;
+    if (!a) return 0;
+    while (*a && (*a < '0' || *a > '9')) a++;
+    return atoi(a);
+}
+bool vk_adreno_8xx(const char *name) {
+    int n = adreno_number(name);
+    return n >= 800 && n < 900;
+}
+bool vk_is_adreno_830(const char *name) {
+    int n = adreno_number(name);
+    return n == 830;
+}
+// LRZ's Automatic: on for the Adreno 7xx too - that 750's text and colors were the 128 MB storage range (fixed in
+// 0.5.0), and with LRZ on it draws right at 55-60 fps (issue #3)
+bool vk_lrz_auto(const char *name) {
+    int n = adreno_number(name);
+    return n >= 700 && n < 900;
+}
+#endif
+
 static void create_device(void) {
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
@@ -483,6 +509,13 @@ static void create_device(void) {
     }
 #endif
     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+#ifdef __ANDROID__
+    g_vk.has_shading_rate = has_ext(ep, ne, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+    if (g_vk.has_shading_rate && !env_on("LARECOMP_NO_VRS") && n_ext < 31) {
+        ext[n_ext++] = VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME;
+        LOG("[vk-cap] VK_KHR_fragment_shading_rate enabled\n");
+    }
+#endif
     bool fault = has_ext(ep, ne, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);  // device-lost diagnostics (vk_device_fault_report)
 #ifdef __ANDROID__
     if (fault && !fault_have.deviceFault) {
@@ -582,16 +615,19 @@ static void create_device(void) {
                                               .pNext = driver_props ? &driver : NULL};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &properties);
     if (!driver_props) snprintf(driver.driverName, sizeof driver.driverName, "unknown");
-    LOG("[vk-cap] gpu %s vendor %#x device %#x api %u.%u.%u driver-id %u name %s info %s\n",
+    g_vk.is_adreno_830 = vk_is_adreno_830(g_vk.props.deviceName);
+    extern bool plat_is_snapdragon_8_elite(void);
+    LOG("[vk-cap] gpu %s vendor %#x device %#x api %u.%u.%u driver-id %u name %s info %s (Adreno 830: %s, 8 Elite: %s)\n",
         g_vk.props.deviceName, g_vk.props.vendorID, g_vk.props.deviceID, VK_API_VERSION_MAJOR(g_vk.props.apiVersion),
         VK_API_VERSION_MINOR(g_vk.props.apiVersion), VK_API_VERSION_PATCH(g_vk.props.apiVersion),
-        (unsigned)driver.driverID, driver.driverName, driver.driverInfo);
-    LOG("[vk-cap] storage16 %u timeline %u mirror-clamp %u scalar %u dynamic-rendering %u sync2 %u demote %u terminate %u maintenance4 %u int64 %u int8 %u storage8 %u uniform-storage8 %u BC %u ASTC %u timestamps %u\n",
-        h11.storageBuffer16BitAccess, h12.timelineSemaphore, h12.samplerMirrorClampToEdge, h12.scalarBlockLayout,
-        h13.dynamicRendering, h13.synchronization2, h13.shaderDemoteToHelperInvocation, h13.shaderTerminateInvocation,
-        h13.maintenance4, have.features.shaderInt64, h12.shaderInt8, h12.storageBuffer8BitAccess,
-        h12.uniformAndStorageBuffer8BitAccess, have.features.textureCompressionBC, have.features.textureCompressionASTC_LDR,
-        g_vk.props.limits.timestampComputeAndGraphics);
+        (unsigned)driver.driverID, driver.driverName, driver.driverInfo,
+        g_vk.is_adreno_830 ? "yes" : "no", plat_is_snapdragon_8_elite() ? "yes" : "no");
+    LOG("[vk-cap] float16 %u storage16 %u uniform16 %u timeline %u mirror-clamp %u scalar %u dynamic-rendering %u sync2 %u demote %u terminate %u maintenance4 %u int64 %u int8 %u storage8 %u uniform-storage8 %u BC %u ASTC %u timestamps %u\n",
+        h12.shaderFloat16, h11.storageBuffer16BitAccess, h11.uniformAndStorageBuffer16BitAccess, h12.timelineSemaphore,
+        h12.samplerMirrorClampToEdge, h12.scalarBlockLayout, h13.dynamicRendering, h13.synchronization2,
+        h13.shaderDemoteToHelperInvocation, h13.shaderTerminateInvocation, h13.maintenance4, have.features.shaderInt64,
+        h12.shaderInt8, h12.storageBuffer8BitAccess, h12.uniformAndStorageBuffer8BitAccess, have.features.textureCompressionBC,
+        have.features.textureCompressionASTC_LDR, g_vk.props.limits.timestampComputeAndGraphics);
     {   // (for driver compatibility reports: how far a storage buffer reaches and the memory types, vulkan/exec.c)
         VkPhysicalDeviceMemoryProperties mp;
         vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
@@ -634,6 +670,8 @@ static void create_device(void) {
         // (docs/ANDROID-PORT.md, Fase 0): the 8-bit features only when the driver has them
         f12.shaderInt8 = h12.shaderInt8;
         f12.uniformAndStorageBuffer8BitAccess = h12.uniformAndStorageBuffer8BitAccess;
+        f12.shaderFloat16 = h12.shaderFloat16;
+        f11.uniformAndStorageBuffer16BitAccess = h11.uniformAndStorageBuffer16BitAccess;
         // nor 16-bit storage: no translated or built-in shader declares it (none of 3592 cached on the Adreno 830),
         // and the Adreno 610 under Turnip lacks it (issue #4). LARECOMP_VK_NO_STORAGE16=1 (test): as if it lacked it.
         if (getenv("LARECOMP_VK_NO_STORAGE16") && atoi(getenv("LARECOMP_VK_NO_STORAGE16")))
@@ -668,6 +706,7 @@ static void create_device(void) {
     VkPhysicalDeviceTimelineSemaphoreFeatures e_tl = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
                                                       .timelineSemaphore = VK_TRUE};
     VkPhysicalDeviceShaderFloat16Int8Features e_i8 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
+                                                      .shaderFloat16 = h12.shaderFloat16,
                                                       .shaderInt8 = h12.shaderInt8, .pNext = &e_tl};
     VkPhysicalDevice8BitStorageFeatures e_b8 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
                                                 .storageBuffer8BitAccess = h12.storageBuffer8BitAccess,
@@ -676,7 +715,8 @@ static void create_device(void) {
     VkPhysicalDeviceScalarBlockLayoutFeatures e_sbl = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES,
                                                        .scalarBlockLayout = VK_TRUE, .pNext = &e_b8};
     VkPhysicalDevice16BitStorageFeatures e_b16 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
-                                                  .storageBuffer16BitAccess = h11.storageBuffer16BitAccess, .pNext = &e_sbl};
+                                                  .storageBuffer16BitAccess = h11.storageBuffer16BitAccess,
+                                                  .uniformAndStorageBuffer16BitAccess = h11.uniformAndStorageBuffer16BitAccess, .pNext = &e_sbl};
     if (g_vk.api < VK_API_VERSION_1_3) {
         void *x = f13.pNext;  // (the 1.3 extensions' in use, ahead of the optional ones f13 led to)
 #define ECHAIN(on, s) do { if (on) { (s).pNext = x; x = &(s); } } while (0)
@@ -881,12 +921,19 @@ static void create_swapchain(void) {
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
 #ifdef __ANDROID__
-    // The surface reports the panel's own (portrait) orientation; the window is landscape: images of the window's
-    // size, turned by the compositor (pre-rotation in the app would spare it that: docs/ANDROID-PORT.md, Fase 3)
-    VkExtent2D ext = {(uint32_t)w, (uint32_t)h};
-    VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-    LOG("[vk] swapchain: surface %ux%u transform %#x, window %dx%d, present mode %d, images %u-%u\n", caps.currentExtent.width,
-        caps.currentExtent.height, caps.currentTransform, w, h, present_mode(), caps.minImageCount, caps.maxImageCount);
+    // Pre-rotation: match surface orientation so SurfaceFlinger avoids composition rotation
+    bool allow_prerot = !getenv("LARECOMP_NO_PRE_ROTATION");
+    VkSurfaceTransformFlagBitsKHR transform = (allow_prerot && caps.currentTransform) ? caps.currentTransform : VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    VkExtent2D ext;
+    if (transform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+        ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)h, (uint32_t)w};
+    } else {
+        ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
+    }
+    g_vk.pre_transform = transform;
+    LOG("[vk] swapchain: surface %ux%u currentTransform %#x preTransform %#x, window %dx%d, present mode %d, images %u-%u\n",
+        caps.currentExtent.width, caps.currentExtent.height, caps.currentTransform, transform, w, h, present_mode(),
+        caps.minImageCount, caps.maxImageCount);
 #else
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
     VkSurfaceTransformFlagBitsKHR transform = caps.currentTransform;
@@ -1243,6 +1290,11 @@ static void bars_backdrop(VkCommandBuffer cb, TexBackend *b, double vx, double v
     if (!on || g_settings.black_bars || crop[2] <= 0 || crop[3] <= 0) return;
     {
         double W = g_vk.sc_extent.width, H = g_vk.sc_extent.height, cw = crop[2] * 0.3, ch = crop[3] * 0.3;
+#ifdef __ANDROID__
+        if (g_vk.pre_transform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+            double tmp = W; W = H; H = tmp;
+        }
+#endif
         if (vx >= 1) {
             float uv[4] = {crop[0], crop[1], (float)cw, crop[3]};
             vk_present_backdrop(cb, 0, (float)vy, (float)vx, (float)vh, uv, flip, 0.42f);
@@ -1366,6 +1418,11 @@ void backend_present(NvnTexture *t) {
     }
     if (have) {
         double dw = g_vk.sc_extent.width, dh = g_vk.sc_extent.height;
+#ifdef __ANDROID__
+        if (g_vk.pre_transform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+            double tmp = dw; dw = dh; dh = tmp;
+        }
+#endif
         extern void widescreen_frame_end(uint64_t frame);
         widescreen_frame_end(total_frames);
         extern void widescreen_set_factor(float f);
@@ -1410,7 +1467,13 @@ void backend_present(NvnTexture *t) {
         widescreen_set_factor((float)shape);
         renderer_set_scale((float)sx, (float)sy);
         VkCommandBuffer cb = vk_cmd();
-        float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
+        float rot = 0.0f;
+#ifdef __ANDROID__
+        if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) rot = 1.0f;
+        else if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR) rot = 2.0f;
+        else if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) rot = 3.0f;
+#endif
+        float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, rot, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
 #ifdef __ANDROID__
@@ -1588,25 +1651,6 @@ static void quick_exit_handler(void) {
 }
 
 #ifdef __ANDROID__
-// Driver compatibility's Automatic (settings.h gpu_heap / turnip_lrz): the fastest paths on the Adreno 8xx GPUs they
-// were made on, the compatible ones elsewhere (an Adreno 750 drew text and colors wrong with them). name: Vulkan's
-// "Adreno (TM) 830v1" or the kernel's "Adreno830v2".
-static int adreno_number(const char *name) {
-    const char *a = name ? strstr(name, "Adreno") : NULL;
-    if (!a) return 0;
-    while (*a && (*a < '0' || *a > '9')) a++;
-    return atoi(a);
-}
-bool vk_adreno_8xx(const char *name) {
-    int n = adreno_number(name);
-    return n >= 800 && n < 900;
-}
-// LRZ's Automatic: on for the Adreno 7xx too - that 750's text and colors were the 128 MB storage range (fixed in
-// 0.5.0), and with LRZ on it draws right at 55-60 fps (issue #3)
-bool vk_lrz_auto(const char *name) {
-    int n = adreno_number(name);
-    return n >= 700 && n < 900;
-}
 static bool g_lrz_at_start = true;
 bool vk_lrz_at_start(void) { return g_lrz_at_start; }  // (the start screen: a change needs a restart)
 const char *vk_gpu_name(void) { return g_vk.props.deviceName; }

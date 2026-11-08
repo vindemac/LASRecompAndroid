@@ -76,8 +76,8 @@ static uint64_t render_cpu_ns(void) {
 
 static void *render_main(void *arg) {
     (void)arg;
-    extern void plat_thread_unpin(void);
-    plat_thread_unpin();
+    extern void plat_thread_pin_prime(void);
+    plat_thread_pin_prime();
     // Keep the established ADPF signal by default. CPU-only timing is an explicit experiment:
     // excluding descheduling/waits can understate the work seen by Android's frequency governor.
     const char *timing = getenv("LARECOMP_ADPF_CPU_TIME");

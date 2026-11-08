@@ -10,6 +10,7 @@
 #include <stdatomic.h>
 #include <SDL3/SDL_locale.h>
 #include <SDL3/SDL_stdinc.h>
+#include "platform.h"
 #endif
 
 #define SETTINGS_FILE settings_file()
@@ -148,6 +149,13 @@ void settings_load(void) {
     static bool loaded;
     if (loaded) return;
     loaded = true;
+#ifdef __ANDROID__
+    if (plat_is_snapdragon_8_elite()) {
+        g_settings.upscaler = UPSCALE_SGSR1;
+        g_settings.res_mode = RES_Q75;
+        g_settings.fps_mode = 2;
+    }
+#endif
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) return;
 #ifdef __ANDROID__
