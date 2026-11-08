@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+import io
 import os
 import re
 import struct
 import subprocess
 import sys
 import time
+import wave
 from pathlib import Path
 from google import genai
 from google.genai import types
@@ -51,6 +53,17 @@ VOICE_MAP = {
 }
 
 ADB_TARGET = '/sdcard/Android/data/com.lasrecomp.android/files/mods/Traducao_PTBR/voice/'
+
+def pcm_to_wav(pcm_data: bytes, sample_rate: int = 24000, channels: int = 1) -> bytes:
+    if pcm_data.startswith(b'RIFF'):
+        return pcm_data
+    out = io.BytesIO()
+    with wave.open(out, 'wb') as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_data)
+    return out.getvalue()
 
 def sanitize_for_speech(raw: bytes) -> str:
     out = []
@@ -109,9 +122,9 @@ def push_file_to_adb(local_file: Path, device_serial: str = None):
 def call_tts_api(client: genai.Client, text: str, voice: str) -> bytes:
     # Modelos em ordem de preferência/disponibilidade
     candidate_models = [
-        'gemini-2.5-flash-preview-tts',
+        'gemini-3.8-flash-tts',
         'gemini-3.8-flash-lite-tts',
-        'gemini-3.8-flash-tts'
+        'gemini-3.1-flash-tts-preview'
     ]
     last_err = None
     for model_name in candidate_models:
@@ -186,9 +199,10 @@ def generate_voice_pack(files_map: dict, out_dir: str, api_key: str, limit: int 
         while retries > 0 and not success:
             try:
                 audio_data = call_tts_api(client, text, voice)
+                wav_data = pcm_to_wav(audio_data)
                 with open(dest_file, 'wb') as f:
-                    f.write(audio_data)
-                print(f'   Salvo: {dest_file.name} ({len(audio_data)} bytes)')
+                    f.write(wav_data)
+                print(f'   Salvo: {dest_file.name} ({len(wav_data)} bytes)')
                 generated += 1
                 success = True
                 if push_adb:
@@ -248,9 +262,10 @@ def main():
             dest = out_path / f'{key}.wav'
             print(f'Gerando específica [{voice}]: {key} -> "{text}"')
             audio_data = call_tts_api(client, text, voice)
+            wav_data = pcm_to_wav(audio_data)
             with open(dest, 'wb') as f:
-                f.write(audio_data)
-            print(f'Salvo com sucesso: {dest} ({len(audio_data)} bytes)')
+                f.write(wav_data)
+            print(f'Salvo com sucesso: {dest} ({len(wav_data)} bytes)')
             if not args.no_push:
                 push_file_to_adb(dest, args.device)
             time.sleep(args.delay)

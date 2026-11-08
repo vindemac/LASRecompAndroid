@@ -261,20 +261,20 @@ void vk_pace_frame(void) {
     // comfortable, the clocks stayed low and so did the mode)
     static int follow = -1;  // LARECOMP_ADPF_FOLLOW=1: the old target (the mode's own)
     if (follow < 0) follow = getenv("LARECOMP_ADPF_FOLLOW") != NULL;
-    {   // LARECOMP_ADPF_GPU=1 (a test): the GPU's time too (API 35+), so its governor would raise its clock for 60 fps
-        // as well. Accepted on the Snapdragon 8 Elite (2026-10-16) but nothing measurable changed: off by default.
+    {   // Report both CPU and GPU duration to ADPF (API 35+ AWorkDuration + critical-path duration in hint_busy)
+        // so the governor raises SoC/GPU clocks out of the 222 MHz low-power state when GPU-bound in DeX / overworld.
         static int no_gpu = -1;
-        if (no_gpu < 0) no_gpu = getenv("LARECOMP_ADPF_GPU") == NULL;
+        if (no_gpu < 0) no_gpu = getenv("LARECOMP_NO_ADPF_GPU") != NULL;
         static uint64_t last_busy;
         uint64_t total = gpu_busy_total, gpu = total - last_busy;
         last_busy = total;
-        // (per presented frame, against 60 fps's budget in either mode: a 30 fps frame renders one image too - its GPU
-        // time is what a 60 fps frame would take, and halved it looked comfortable: the clock stayed low)
-        // The render hint defaults to the established wall-time signal; CPU-only timing is opt-in.
         extern uint64_t vk_async_frame_cpu_ns(void);
         double hint_busy = game_busy;
         double render_cpu = vk_async_on() ? vk_async_frame_cpu_ns() / 1e6 : 0;
         if (render_cpu > hint_busy) hint_busy = render_cpu;
+        if (render_busy > hint_busy) hint_busy = render_busy;
+        double gpu_ms = gpu / 1e6;
+        if (!no_gpu && gpu_ms > hint_busy && gpu_ms < 100.0) hint_busy = gpu_ms;
         plat_frame_work_gpu((uint64_t)(hint_busy * 1e6), no_gpu ? 0 : gpu, follow && pace_slow ? 33333333ull : 16666667ull,
                             (uint64_t)(game_busy * 1e6));
     }
@@ -3549,7 +3549,8 @@ static void gres_sync(GaRes *e) {
     e->checked = frame;
     const uint8_t *g = (const uint8_t *)(uintptr_t)(HEAP_BASE + e->lo);
     uint64_t len = e->hi - e->lo;
-    VkCommandBuffer barrier_cb = VK_NULL_HANDLE;
+    static VkCommandBuffer barrier_cb = VK_NULL_HANDLE;
+    static uint64_t barrier_seq;
     for (uint64_t b = 0; b < len;) {
         if (!memcmp(g + b, e->shadow + b, 256)) { b += 256; continue; }
         uint64_t s0 = b;
@@ -3560,7 +3561,7 @@ static void gres_sync(GaRes *e) {
         memcpy(e->shadow + s0, g + s0, n);
         for (uint64_t k = s0 / 256; k < (s0 + n + 255) / 256; k++) e->bseq[k] = pend;
         VkCommandBuffer up = vk_upload_cmd();
-        if (up != barrier_cb) { vk_full_barrier(up); barrier_cb = up; }  // once per upload command buffer
+        if (up != barrier_cb || pend != barrier_seq) { vk_full_barrier(up); barrier_cb = up; barrier_seq = pend; }
         VkBufferCopy cp = {sp.off, e->off + s0, n};
         vkCmdCopyBuffer(up, sp.buf, ga_buf, 1, &cp);
         stat_gres_sync += n;
@@ -5300,9 +5301,9 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 #ifdef __ANDROID__
     if (scene_composite) {  // (frame generation: the scene before the HUD, framegen.c)
-        extern bool fg_enabled(void);
+        extern bool fg_scene_capture_needed(void);
         extern void fg_scene_composited(VkCommandBuffer cb, TexBackend *rt);
-        if (fg_enabled()) { vk_end_pass(); fg_scene_composited(vk_cmd(), st.rt.color[0]->backend); }
+        if (fg_scene_capture_needed()) { vk_end_pass(); fg_scene_composited(vk_cmd(), st.rt.color[0]->backend); }
     }
 #endif
     stat_draws++;

@@ -29,23 +29,35 @@ uint64_t g_frame_steps_late;             // (stats) frames that advanced more th
 // LASRecomp beta_5 cb9bc8d, "a real 30".
 static void fixed_30(void) {
     static uint64_t obj;
-    static int saved = -1;  // the game's own minimum while raised
+    static int saved_min = -1, saved_max = -1;
     Cpu *c = kernel_current_cpu();
     uint64_t sys = c ? c->x[23] : 0;
     if (!sys) return;
-    uint8_t *min = (uint8_t *)(uintptr_t)(sys + 0x4e2), max = *(uint8_t *)(uintptr_t)(sys + 0x4e3);
+    uint8_t *min = (uint8_t *)(uintptr_t)(sys + 0x4e2);
+    uint8_t *max = (uint8_t *)(uintptr_t)(sys + 0x4e3);
+    if (saved_min < 0 || obj != sys) {
+        saved_min = *min > 0 ? *min : 1;
+        saved_max = *max >= saved_min ? *max : 2;
+        obj = sys;
+    }
     extern bool vk_pace_holds_30(void);
     bool auto_hold = g_settings.fps_mode == 0 && vk_pace_holds_30();
     if (g_settings.fps_mode == 1 || auto_hold) {
-        if (saved < 0 || obj != sys) {
-            saved = *min, obj = sys;
-            LOG("[pace] %s: the game's minimum interval %u -> %u\n", auto_hold ? "auto holds 30" : "frame rate 30", saved, max);
+        if (*min != (uint8_t)saved_max || *max != (uint8_t)saved_max) {
+            *min = (uint8_t)saved_max;
+            *max = (uint8_t)saved_max;
+            LOG("[pace] %s: the game's interval clamped to [%u, %u]\n", auto_hold ? "auto holds 30" : "frame rate 30", *min, *max);
         }
-        *min = max;
-    } else if (saved >= 0 && obj == sys) {
-        *min = (uint8_t)saved;
-        saved = -1;
-        LOG("[pace] the game's minimum interval back to %u\n", *min);
+    } else if (g_settings.fps_mode == 2) {
+        if (*min != (uint8_t)saved_min || *max != (uint8_t)saved_min) {
+            *min = (uint8_t)saved_min;
+            *max = (uint8_t)saved_min;
+            LOG("[pace] frame rate 60: the game's interval clamped to [%u, %u]\n", *min, *max);
+        }
+    } else if (*min != (uint8_t)saved_min || *max != (uint8_t)saved_max) {
+        *min = (uint8_t)saved_min;
+        *max = (uint8_t)saved_max;
+        LOG("[pace] the game's interval back to [%u, %u]\n", *min, *max);
     }
 }
 #endif

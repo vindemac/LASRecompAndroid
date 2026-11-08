@@ -123,7 +123,12 @@ void voice_play(const char *key) {
         SDL_ResumeAudioStreamDevice(g_voice_stream);
         SDL_free(wav_data);
     } else {
-        LOG_VOICE("[voice] SDL_LoadWAV_IO falhou para '%s': %s\n", path, SDL_GetError());
+        LOG_VOICE("[voice] SDL_LoadWAV_IO falhou (%s). Tentando como PCM cru (24000 Hz, 1 ch, S16)...\n", SDL_GetError());
+        SDL_AudioSpec raw_spec = {SDL_AUDIO_S16, 1, 24000};
+        SDL_ClearAudioStream(g_voice_stream);
+        SDL_SetAudioStreamFormat(g_voice_stream, &raw_spec, NULL);
+        SDL_PutAudioStreamData(g_voice_stream, buffer, fsize);
+        SDL_ResumeAudioStreamDevice(g_voice_stream);
     }
 
     free(buffer);

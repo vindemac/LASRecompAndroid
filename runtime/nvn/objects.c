@@ -679,14 +679,18 @@ NVN(nvnWindowGetNumActiveTextures) { RET(WIN->active); }
 NVN(nvnWindowSetNumActiveTextures) { WIN->active = (int)A(1); }
 NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
 #ifdef __ANDROID__
+#include "../settings.h"
 int g_present_interval = 1;  // the game's latest (1: 60 fps, 2: 30 fps): the frame pacer (vulkan/exec.c)
 NVN(nvnWindowSetPresentInterval) {
     int want = (int)A(1);
+    if (g_settings.fps_mode == 2) want = 1;
+    else if (g_settings.fps_mode == 1) want = 2;
     extern uint64_t renderer_present_count(void);
     static uint64_t last_switch;
     uint64_t f = renderer_present_count();
-    if (want < g_present_interval && f - last_switch < 60) {
-        // Hysteresis: hold interval 2 for at least 60 frames to prevent 30/60 fps rapid oscillation
+    if (g_settings.fps_mode == 0 && want != g_present_interval && f - last_switch < 60) {
+        // Hysteresis in Auto mode: hold interval for at least 60 frames to prevent 30/60 fps oscillation
+        WIN->interval = g_present_interval;
         return;
     }
     if (want != g_present_interval) {

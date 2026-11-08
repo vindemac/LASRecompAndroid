@@ -870,18 +870,27 @@ void vk_pipeline_cache_save(void) {
 
 // ================================================================== swapchain
 static bool swapchain_readback = true;  // (Android: false where the surface can't be a transfer source)
+static bool sc_want_fifo;
+static const char *wanted_present_mode_name(void) {
+    const char *e = getenv("LARECOMP_VK_PRESENT");
+#ifdef __ANDROID__
+    // Frame generation (framegen.c): FIFO, which shows the in-between frame, presented right after the real one, a
+    // refresh later (mailbox would replace it before it is ever shown). On a 60 Hz display (e.g. DeX) in 60 FPS mode,
+    // 0 in-between frames are generated and FIFO throttles on the external display compositor, so keep MAILBOX.
+    extern bool fg_enabled(void);
+    extern float plat_display_hz(void);
+    float dhz = plat_display_hz();
+    bool fg_fifo = fg_enabled() && !(g_settings.fps_mode == 2 && dhz > 0.0f && dhz <= 62.0f);
+    if (!e && fg_fifo) e = "fifo";
+#endif
+    return e;
+}
 static VkPresentModeKHR present_mode(void) {
     // MAILBOX by default: the game paces itself (vi.c's emulated 60 Hz vsync), and with FIFO every submission
     // queued behind the one waiting for a window image, so the game's fence waits followed the presentation engine:
     // a throttled / captured / busy compositor slowed the whole game (4-21 fps with the GPU mostly idle; mailbox:
     // 60). No tearing. LARECOMP_VK_PRESENT=fifo|immediate|mailbox to choose.
-    const char *e = getenv("LARECOMP_VK_PRESENT");
-#ifdef __ANDROID__
-    // Frame generation (framegen.c): FIFO, which shows the in-between frame, presented right after the real one, a
-    // refresh later (mailbox would replace it before it is ever shown)
-    extern bool fg_enabled(void);
-    if (!e && fg_enabled()) e = "fifo";
-#endif
+    const char *e = wanted_present_mode_name();
     VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -972,6 +981,8 @@ static void create_swapchain(void) {
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 #endif
     VkSwapchainKHR old = g_vk.swapchain;
+    const char *pm_name = wanted_present_mode_name();
+    sc_want_fifo = pm_name && !strcmp(pm_name, "fifo");
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
@@ -1115,7 +1126,10 @@ bool vk_frame_begin(const float clear[4]) {
 #ifdef __ANDROID__
     if (!android_surface_ready()) return false;
 #endif
-    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
+    const char *pm_name = wanted_present_mode_name();
+    bool want_fifo = pm_name && !strcmp(pm_name, "fifo");
+    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height || want_fifo != sc_want_fifo)
+        recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;

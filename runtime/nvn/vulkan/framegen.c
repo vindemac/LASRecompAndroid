@@ -422,6 +422,7 @@ static void pick_depth(void) {
 
 // exec.c draw_, right after the scene's composite into the presented picture (outside any pass)
 static _Atomic bool g_paused;  // (fg_frame_wanted: no in-between frames - paused, the GPU full, or none to make)
+bool fg_scene_capture_needed(void) { return fg_enabled() && !g_paused; }
 void fg_scene_composited(VkCommandBuffer cb, TexBackend *rt) {
     // (paused: no copy either - its full barriers mid-frame cost the driver it paused for: Qualcomm's on the POCO F7
     // Ultra, 8% of real frames late paused against 2.9% with frame generation off; the first frame after a pause goes
@@ -561,7 +562,8 @@ bool fg_frame_wanted(uint64_t frame, TexBackend *fin) {
     last = now;
 #ifdef __ANDROID__
     extern bool plat_is_snapdragon_8_elite(void);
-    bool no_pause = plat_is_snapdragon_8_elite() || getenv("LARECOMP_FG_NO_PAUSE") != NULL;
+    extern float plat_display_hz(void);
+    bool no_pause = (plat_is_snapdragon_8_elite() && plat_display_hz() > 62.0f) || getenv("LARECOMP_FG_NO_PAUSE") != NULL;
 #else
     bool no_pause = getenv("LARECOMP_FG_NO_PAUSE") != NULL;
 #endif
