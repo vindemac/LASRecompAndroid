@@ -559,7 +559,16 @@ bool fg_frame_wanted(uint64_t frame, TexBackend *fin) {
         if (paused) base += (l - base) * 0.01;  // (~100 frames)
     }
     last = now;
-    if (!paused && nlate >= 6 + (int)(base * 60 + 0.5)) {
+#ifdef __ANDROID__
+    extern bool plat_is_snapdragon_8_elite(void);
+    bool no_pause = plat_is_snapdragon_8_elite() || getenv("LARECOMP_FG_NO_PAUSE") != NULL;
+#else
+    bool no_pause = getenv("LARECOMP_FG_NO_PAUSE") != NULL;
+#endif
+    if (no_pause) {
+        paused = false;
+        nlate = 0;
+    } else if (!paused && nlate >= 6 + (int)(base * 60 + 0.5)) {
         if (trial_at > 0) wait_ms = fmin(wait_ms * 2, 80000);  // (the last try didn't hold)
         paused = true, paused_at = now, trial_at = 0;
         LOG("[framegen] paused: %d of the last 60 real frames late (base %.0f%%: the GPU full); next try in %.0f s\n", nlate,
