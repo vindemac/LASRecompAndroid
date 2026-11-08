@@ -1409,6 +1409,10 @@ void backend_present(NvnTexture *t) {
         double dw = g_vk.sc_extent.width, dh = g_vk.sc_extent.height;
         extern void widescreen_frame_end(uint64_t frame);
         widescreen_frame_end(total_frames);
+#ifdef __ANDROID__
+        extern void fg_frame_start(uint64_t frame);
+        fg_frame_start(total_frames);
+#endif
         extern void widescreen_set_factor(float f);
         extern bool widescreen_allowed(void);
         // render scale + placement in the window: runtime/nvn/output_scale.c (Video tab "Internal resolution");
@@ -1489,7 +1493,7 @@ void backend_present(NvnTexture *t) {
             if (fg_draws_overlays()) menu_redraw((void *)vk_cmd());
             vk_frame_end(fs0 && k == 1 ? "build/fg_gen0.png" : NULL);
         }
-        if (gen) fg_frame_done();
+        fg_frame_done();
 #else
         vk_frame_end(shot ? "build/window.png" : NULL);
 #endif

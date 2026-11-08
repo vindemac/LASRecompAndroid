@@ -151,7 +151,7 @@ void settings_load(void) {
     loaded = true;
 #ifdef __ANDROID__
     if (plat_is_snapdragon_8_elite()) {
-        g_settings.upscaler = UPSCALE_SGSR1;
+        g_settings.upscaler = UPSCALE_SGSR2;
         g_settings.res_mode = RES_Q75;
         g_settings.fps_mode = 2;
     }
@@ -226,6 +226,7 @@ void settings_load(void) {
                                   (n >= 1 && n <= 4) ? n : n > 4 ? 4 : RES_MATCH;  // (5x-8x were removed)
         }
 #ifdef __ANDROID__
+        else if (!strcmp(key, "upscaler") && !strcmp(val, "sgsr2")) g_settings.upscaler = UPSCALE_SGSR2;
         else if (!strcmp(key, "upscaler") && !strcmp(val, "sgsr1")) g_settings.upscaler = UPSCALE_SGSR1;
 #endif
         else if (!strcmp(key, "upscaler")) g_settings.upscaler = !strcmp(val, "bilinear") ? UPSCALE_BILINEAR : UPSCALE_SHARP;  // (metalfx / fsr1: this OS's)
@@ -313,6 +314,7 @@ void settings_save(void) {
     fprintf(f, "\n");
 #endif
     fprintf(f, "upscaler = %s\n", g_settings.upscaler == UPSCALE_METALFX ? "metalfx" : g_settings.upscaler == UPSCALE_FSR1 ? "fsr1"
+                                  : g_settings.upscaler == UPSCALE_SGSR2 ? "sgsr2"
                                   : g_settings.upscaler == UPSCALE_SGSR1 ? "sgsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
     if (g_settings.res_mode == RES_DYNAMIC) fprintf(f, "resolution = dynamic\n");

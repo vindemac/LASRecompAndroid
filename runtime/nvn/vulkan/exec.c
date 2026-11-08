@@ -5613,16 +5613,30 @@ static VkImageView raw_view(TexBackend *b) {
 static VkPipelineLayout post_layout;
 static VkDescriptorSetLayout post_set_layout;
 
+typedef struct {
+    float clipToPrevClip[16];   // 64 bytes
+    float renderSize[2];        // 8 bytes
+    float outputSize[2];        // 8 bytes
+    float renderSizeRcp[2];     // 8 bytes
+    float outputSizeRcp[2];     // 8 bytes
+    float jitterOffset[2];      // 8 bytes
+    float scaleRatio[2];        // 8 bytes
+    float cameraFovAngleHor;    // 4 bytes
+    float minLerpContribution;  // 4 bytes
+    float reset;                // 4 bytes
+    uint32_t bSameCamera;       // 4 bytes
+} Sgsr2Params;
+
 static VkPipeline post_pipeline(const char *fs) {
-    static struct { const char *fs; VkPipeline p; } cache[8];
-    for (int i = 0; i < 8; i++) if (cache[i].p && cache[i].fs == fs) return cache[i].p;
+    static struct { const char *fs; VkPipeline p; } cache[12];
+    for (int i = 0; i < 12; i++) if (cache[i].p && cache[i].fs == fs) return cache[i].p;
     if (!post_layout) {
         VkDescriptorSetLayoutBinding b[3];
         for (uint32_t i = 0; i < 3; i++)
             b[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
         VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
         VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &post_set_layout));
-        VkPushConstantRange r = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32};
+        VkPushConstantRange r = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
         VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
                                          .pSetLayouts = &post_set_layout, .pushConstantRangeCount = 1, .pPushConstantRanges = &r};
         VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &post_layout));
@@ -5645,7 +5659,7 @@ static VkPipeline post_pipeline(const char *fs) {
                                               .pAttachments = &cba};
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
-    VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat fmt = (!strcmp(fs, "sgsr2_convert.frag")) ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
     VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1,
                                         .pColorAttachmentFormats = &fmt};
     VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -5656,16 +5670,17 @@ static VkPipeline post_pipeline(const char *fs) {
                                        .renderPass = vk_rp_compat(1, &fmt, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT)};
     VkPipeline p;
     VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
-    for (int i = 0; i < 8; i++) if (!cache[i].p) { cache[i].fs = fs; cache[i].p = p; break; }
+    for (int i = 0; i < 12; i++) if (!cache[i].p) { cache[i].fs = fs; cache[i].p = p; break; }
     return p;
 }
 
-// Post image `i` at w x h (RGBA8, kept until the size changes). 0, 1: SMAA edges / weights, 2: SMAA output,
-// 3, 4: FSR EASU / RCAS.
+// Post image `i` at w x h (kept until the size changes). 0, 1: SMAA edges / weights, 2: SMAA output,
+// 3, 4: FSR EASU / RCAS / SGSR1. 5: SGSR2 convert motion/depth (RGBA16F). 6, 7: SGSR2 history ping-pong (RGBA8).
 static TexBackend *post_image(int i, uint32_t w, uint32_t h) {
-    static TexBackend img[5];
+    static TexBackend img[8];
     TexBackend *d = &img[i];
-    if (d->image && (d->width != w || d->height != h)) {
+    VkFormat fmt = (i == 5) ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+    if (d->image && (d->width != w || d->height != h || d->format != fmt)) {
         vk_views_forget(d);
         vk_defer_image(d->image, d->mem);
         d->image = VK_NULL_HANDLE;
@@ -5677,7 +5692,7 @@ static TexBackend *post_image(int i, uint32_t w, uint32_t h) {
         if (i < 2) usage |= VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
 #endif
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                                .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                .format = fmt, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = usage};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
@@ -5685,7 +5700,7 @@ static TexBackend *post_image(int i, uint32_t w, uint32_t h) {
         if (i < 2) ai.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
 #endif
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
-        d->format = VK_FORMAT_R8G8B8A8_UNORM; d->width = w; d->height = h; d->depth = 1; d->layers = 1; d->levels = 1;
+        d->format = fmt; d->width = w; d->height = h; d->depth = 1; d->layers = 1; d->levels = 1;
         d->samples = 1; d->aspect = VK_IMAGE_ASPECT_COLOR_BIT; d->base_type = VK_IMAGE_VIEW_TYPE_2D;
         vk_image_init_layout(vk_cmd(), d->image, d->aspect);
     }
@@ -5724,8 +5739,8 @@ static VkImageView smaa_lut(int i) {
 
 // One post pass (outside the window image's rendering): srcs (bindings 0..n-1) -> dst, fragment shader `fs`.
 // clear: start from zero (SMAA's edge pass only writes edge pixels; its weights / output read them).
-static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const float pc[8],
-                      bool clear) {
+static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const void *pc,
+                      uint32_t pc_bytes, bool clear, bool nearest0) {
     VkPipeline pipe = post_pipeline(fs);  // (before the rendering begins: created inside it, the NVIDIA driver crashed)
     vk_full_barrier(cb);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = post_view(dst),
@@ -5739,7 +5754,7 @@ static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *src
     VkDescriptorImageInfo ii[3];
     VkWriteDescriptorSet w[3];
     for (int i = 0; i < n; i++) {
-        ii[i] = (VkDescriptorImageInfo){vk_default_sampler(true), srcs[i], VK_IMAGE_LAYOUT_GENERAL};
+        ii[i] = (VkDescriptorImageInfo){vk_default_sampler(i == 0 && nearest0 ? false : true), srcs[i], VK_IMAGE_LAYOUT_GENERAL};
         w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = (uint32_t)i,
                                       .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                       .pImageInfo = &ii[i]};
@@ -5751,7 +5766,7 @@ static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *src
     VkRect2D sc = {{0, 0}, {dst->width, dst->height}};
     vkCmdSetViewport(cb, 0, 1, &vp);
     vkCmdSetScissor(cb, 0, 1, &sc);
-    vkCmdPushConstants(cb, post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
+    if (pc && pc_bytes) vkCmdPushConstants(cb, post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, pc_bytes, pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
     vk_end_rendering(cb);
 }
@@ -5767,7 +5782,8 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     bool up = ow > b->width + 1 || oh > b->height + 1;  // (an upscale only)
     bool fsr = g_settings.upscaler == UPSCALE_FSR1 && up;
     bool sgsr = g_settings.upscaler == UPSCALE_SGSR1 && up;  // (Android: Snapdragon GSR 1, one pass)
-    if (!smaa && !fsr && !sgsr) return v;
+    bool sgsr2 = g_settings.upscaler == UPSCALE_SGSR2 && up; // (Qualcomm Snapdragon GSR 2, temporal)
+    if (!smaa && !fsr && !sgsr && !sgsr2) return v;
     extern void vk_frame_suspend(void);
     extern void vk_frame_resume(void);
     vk_frame_suspend();
@@ -5777,11 +5793,11 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         TexBackend *edges = post_image(0, b->width, b->height), *weights = post_image(1, b->width, b->height);
         TexBackend *out = post_image(2, b->width, b->height);
         VkImageView in[3] = {v};
-        post_pass(cb, "smaa_edge.frag", in, 1, edges, m, true);
+        post_pass(cb, "smaa_edge.frag", in, 1, edges, m, 32, true, false);
         VkImageView wi[3] = {post_view(edges), smaa_lut(0), smaa_lut(1)};
-        post_pass(cb, "smaa_weight.frag", wi, 3, weights, m, true);
+        post_pass(cb, "smaa_weight.frag", wi, 3, weights, m, 32, true, false);
         VkImageView bi[3] = {v, post_view(weights)};
-        post_pass(cb, "smaa_blend.frag", bi, 2, out, m, false);
+        post_pass(cb, "smaa_blend.frag", bi, 2, out, m, 32, false, false);
         v = post_view(out);
     }
     if (fsr) {
@@ -5789,10 +5805,10 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         TexBackend *e = post_image(3, ow, oh), *r = post_image(4, ow, oh);
         float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
         VkImageView ei[3] = {v};
-        post_pass(cb, "easu.frag", ei, 1, e, pe, false);
+        post_pass(cb, "easu.frag", ei, 1, e, pe, 32, false, false);
         float pr[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh};  // (sharpness 0.2 stops: AMD's default)
         VkImageView ri_[3] = {post_view(e)};
-        post_pass(cb, "rcas.frag", ri_, 1, r, pr, false);
+        post_pass(cb, "rcas.frag", ri_, 1, r, pr, 32, false, false);
         v = post_view(r);
     }
     if (sgsr) {
@@ -5800,18 +5816,82 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         TexBackend *e = post_image(3, ow, oh);
         float ps[8] = {1.0f / iw, 1.0f / ih, iw, ih, (float)ow, (float)oh};
         VkImageView si[3] = {v};
-        post_pass(cb, "sgsr1.frag", si, 1, e, ps, false);
+        post_pass(cb, "sgsr1.frag", si, 1, e, ps, 32, false, false);
         v = post_view(e);
+    }
+    if (sgsr2) {
+        float iw = (float)b->width, ih = (float)b->height;
+        TexBackend *mda = post_image(5, b->width, b->height);
+
+        static int hist_idx;
+        TexBackend *prev_hist = post_image(6 + hist_idx, ow, oh);
+        TexBackend *curr_hist = post_image(6 + (hist_idx ^ 1), ow, oh);
+
+#ifdef __ANDROID__
+        extern VkImageView fg_scene_depth_view(void);
+        extern bool fg_reproject_matrix(float mp[16]);
+        VkImageView dv = fg_scene_depth_view();
+        float mp[16];
+        bool have_reproj = fg_reproject_matrix(mp);
+#else
+        VkImageView dv = VK_NULL_HANDLE;
+        float mp[16];
+        bool have_reproj = false;
+#endif
+
+        static uint32_t last_w, last_h, last_ow, last_oh;
+        bool size_changed = (b->width != last_w || b->height != last_h || ow != last_ow || oh != last_oh);
+        last_w = b->width; last_h = b->height; last_ow = ow; last_oh = oh;
+
+        bool reset = size_changed || !dv || !have_reproj;
+
+        Sgsr2Params pc = {0};
+        pc.renderSize[0] = iw;
+        pc.renderSize[1] = ih;
+        pc.outputSize[0] = (float)ow;
+        pc.outputSize[1] = (float)oh;
+        pc.renderSizeRcp[0] = 1.0f / iw;
+        pc.renderSizeRcp[1] = 1.0f / ih;
+        pc.outputSizeRcp[0] = 1.0f / (float)ow;
+        pc.outputSizeRcp[1] = 1.0f / (float)oh;
+        pc.jitterOffset[0] = 0.0f;
+        pc.jitterOffset[1] = 0.0f;
+        pc.scaleRatio[0] = (float)ow / iw;
+        pc.scaleRatio[1] = iw / (float)ow;
+        pc.cameraFovAngleHor = 0.41421356f;
+        pc.minLerpContribution = 0.05f;
+        pc.reset = reset ? 1.0f : 0.0f;
+        pc.bSameCamera = (!reset && have_reproj) ? 1 : 0;
+
+        if (have_reproj) {
+            for (int col = 0; col < 4; col++)
+                for (int row = 0; row < 4; row++)
+                    pc.clipToPrevClip[col * 4 + row] = mp[row * 4 + col];
+        } else {
+            pc.clipToPrevClip[0] = 1.0f;
+            pc.clipToPrevClip[5] = 1.0f;
+            pc.clipToPrevClip[10] = 1.0f;
+            pc.clipToPrevClip[15] = 1.0f;
+        }
+
+        VkImageView depth_in = dv ? dv : vk_dummy_view(TEXTYPE_2D);
+        post_pass(cb, "sgsr2_convert.frag", &depth_in, 1, mda, &pc, sizeof pc, false, true);
+
+        VkImageView up_srcs[3] = {v, post_view(prev_hist), post_view(mda)};
+        post_pass(cb, "sgsr2_upscale.frag", up_srcs, 3, curr_hist, &pc, sizeof pc, false, false);
+
+        hist_idx ^= 1;
+        v = post_view(curr_hist);
     }
     vk_full_barrier(cb);
     vk_frame_resume();
     {
         static uint32_t piw, pih, pow_, poh;
-        static int psm = -1, pfs = -1, psg = -1;
-        if (b->width != piw || b->height != pih || ow != pow_ || oh != poh || smaa != psm || fsr != pfs || sgsr != psg)
-            LOG("[post] %ux%u%s%s%s -> %ux%u\n", b->width, b->height, smaa ? " smaa" : "", fsr ? " fsr1" : "",
-                sgsr ? " sgsr1" : "", ow, oh);
-        piw = b->width; pih = b->height; pow_ = ow; poh = oh; psm = smaa; pfs = fsr; psg = sgsr;
+        static int psm = -1, pfs = -1, psg = -1, psg2 = -1;
+        if (b->width != piw || b->height != pih || ow != pow_ || oh != poh || smaa != psm || fsr != pfs || sgsr != psg || sgsr2 != psg2)
+            LOG("[post] %ux%u%s%s%s%s -> %ux%u\n", b->width, b->height, smaa ? " smaa" : "", fsr ? " fsr1" : "",
+                sgsr ? " sgsr1" : "", sgsr2 ? " sgsr2" : "", ow, oh);
+        piw = b->width; pih = b->height; pow_ = ow; poh = oh; psm = smaa; pfs = fsr; psg = sgsr; psg2 = sgsr2;
     }
     return v;
 }

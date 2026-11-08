@@ -378,6 +378,40 @@ void fg_note_draw(NvnTexture *depth, uint32_t pass_w, uint32_t pass_h) {
     }
     g_dc[i].n++;
 }
+
+static void pick_depth(void);
+static void mat_mul(const float *a, const float *b, float *o);
+static bool mat_inv(const float *m, float *o);
+
+void fg_frame_start(uint64_t frame) {
+    if (g_vp_frame == frame) return;
+    pick_depth();
+    extern bool widescreen_camera(uint64_t frame, float vp[16]);
+    float vp[16];
+    bool have = widescreen_camera(frame, vp);
+    if (have) {
+        if (g_have_vp) memcpy(g_vp_prev, g_vp, sizeof g_vp), g_have_prev = true;
+        memcpy(g_vp, vp, sizeof vp), g_have_vp = true, g_vp_frame = frame;
+    } else {
+        g_have_vp = g_have_prev = false;
+    }
+}
+
+VkImageView fg_scene_depth_view(void) {
+    if (!g_depth || !g_depth->backend) return VK_NULL_HANDLE;
+    TexBackend *db = g_depth->backend;
+    static const VkComponentMapping ident = {0};
+    return vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, ident, VK_IMAGE_ASPECT_DEPTH_BIT);
+}
+
+bool fg_reproject_matrix(float mp[16]) {
+    if (!g_have_vp || !g_have_prev) return false;
+    float inv[16];
+    if (!mat_inv(g_vp, inv)) return false;
+    mat_mul(g_vp_prev, inv, mp);
+    return true;
+}
+
 static void pick_depth(void) {
     int best = -1;
     for (int i = 0; i < 8 && g_dc[i].t; i++) if (best < 0 || g_dc[i].n > g_dc[best].n) best = i;
@@ -498,15 +532,8 @@ bool fg_frame_wanted(uint64_t frame, TexBackend *fin) {
         }
     }
     int nb = frames_between(g_present_interval);
-    pick_depth();
-    float vp[16];
-    bool have = widescreen_camera(frame, vp);
-    if (have) {
-        if (g_have_vp) memcpy(g_vp_prev, g_vp, sizeof g_vp), g_have_prev = true;
-        memcpy(g_vp, vp, sizeof vp), g_have_vp = true, g_vp_frame = frame;
-    } else {
-        g_have_vp = g_have_prev = false;
-    }
+    fg_frame_start(frame);
+    bool have = g_have_vp;
     // Only while the game holds its 30 on this GPU: real frames late (the GPU full) get no in-between ones - their GPU
     // time goes back to the game. With FIFO a real frame takes two refreshes (33.3 ms) or, late, three (50 ms), so late
     // frames are counted rather than averaged: 6 of the last 60 (2 s) pause it. Then it tries again after a wait that

@@ -570,22 +570,25 @@ static void tab_display(void) {
         if (opt_choice("Internal resolution", &ri, res, NRES, RES_DEFAULT_AT, d, false)) g_settings.res_mode = res_mode[ri];
     }
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
+        const char *ud = "";
+#ifndef __ANDROID__
 #ifdef __APPLE__
         static const char *ups[] = {"Bilinear", "MetalFX"};
-        const char *ud = "How the image is scaled up to the window when it renders at a lower resolution. MetalFX: Apple's "
-                         "upscaler, sharper. Bilinear: plain and soft.";
+        ud = "How the image is scaled up to the window when it renders at a lower resolution. MetalFX: Apple's "
+             "upscaler, sharper. Bilinear: plain and soft.";
 #else
         static const char *ups[] = {"Bilinear", "AMD FSR 1"};
-        const char *ud = "How the image is scaled up to the window when it renders at a lower resolution. AMD FSR 1: "
-                         "edge-aware upscaling and sharpening, sharper. Bilinear: plain and soft.";
+        ud = "How the image is scaled up to the window when it renders at a lower resolution. AMD FSR 1: "
+             "edge-aware upscaling and sharpening, sharper. Bilinear: plain and soft.";
 #endif
-#ifdef __ANDROID__  // (+ Qualcomm's Snapdragon GSR 1: one pass, made for phones - exec.c post_process)
-        static const char *ups_a[] = {"Bilinear", "AMD FSR 1", "Snapdragon GSR 1"};
-        static const int ups_mode[] = {UPSCALE_BILINEAR, UPSCALE_FSR1, UPSCALE_SGSR1};
-        ud = "How the image is scaled up to the window when it renders at a lower resolution. AMD FSR 1: edge-aware "
-             "upscaling and sharpening, sharper. Snapdragon GSR 1: Qualcomm's upscaler made for phones, in a single pass "
-             "- sharp edges, lighter on the GPU. Bilinear: plain and soft.";
-        int ui = g_settings.upscaler == UPSCALE_SGSR1 ? 2 : g_settings.upscaler == UPSCALE_BILINEAR ? 0 : 1;
+#endif
+#ifdef __ANDROID__  // (+ Qualcomm's Snapdragon GSR 1 & 2: exec.c post_process)
+        static const char *ups_a[] = {"Bilinear", "AMD FSR 1", "Snapdragon GSR 1", "Snapdragon GSR 2"};
+        static const int ups_mode[] = {UPSCALE_BILINEAR, UPSCALE_FSR1, UPSCALE_SGSR1, UPSCALE_SGSR2};
+        ud = "How the image is scaled up to the window when it renders at a lower resolution. Snapdragon GSR 2: "
+             "Qualcomm's temporal upscaler with depth reprojection. Snapdragon GSR 1: Qualcomm's spatial single-pass upscaler "
+             "- sharp edges, lighter on the GPU. AMD FSR 1: edge-aware upscaling and sharpening. Bilinear: plain and soft.";
+        int ui = g_settings.upscaler == UPSCALE_SGSR2 ? 3 : g_settings.upscaler == UPSCALE_SGSR1 ? 2 : g_settings.upscaler == UPSCALE_BILINEAR ? 0 : 1;
 #else
         int ui = g_settings.upscaler == UPSCALE_BILINEAR ? 0 : 1;
 #endif
@@ -596,7 +599,7 @@ static void tab_display(void) {
             opt_disable_next();
         }
 #ifdef __ANDROID__
-        if (opt_choice("Upscaler", &ui, ups_a, 3, 1, ud)) g_settings.upscaler = ups_mode[ui];
+        if (opt_choice("Upscaler", &ui, ups_a, 4, 3, ud)) g_settings.upscaler = ups_mode[ui];
 #else
         if (opt_choice("Upscaler", &ui, ups, 2, 1, ud)) g_settings.upscaler = ui ? UPSCALE_SHARP : UPSCALE_BILINEAR;
 #endif
