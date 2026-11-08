@@ -154,6 +154,8 @@ void settings_load(void) {
         g_settings.upscaler = UPSCALE_SGSR2;
         g_settings.res_mode = RES_Q75;
         g_settings.fps_mode = 2;
+        g_settings.frame_gen = true;
+        g_settings.frame_gen_120 = true;
     }
 #endif
     FILE *f = fopen(SETTINGS_FILE, "r");

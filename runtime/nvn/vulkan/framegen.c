@@ -527,6 +527,7 @@ bool fg_frame_wanted(uint64_t frame, TexBackend *fin) {
         if (want != asked) {
             extern void vk_surface_frame_rate(float hz);
             asked = want;
+            LOG("[framegen] requesting refresh rate %.0f Hz (current display_hz=%.0f)\n", want, plat_display_hz());
             prefer_refresh(want > 61 ? 1000.0f : want);  // (above 60: the fastest mode)
             vk_surface_frame_rate(want);
         }
@@ -574,6 +575,12 @@ bool fg_frame_wanted(uint64_t frame, TexBackend *fin) {
     g_paused = paused || nb == 0;  // (none to make either - the game's 60 on a 60 Hz display: no scene copy)
     bool ok = have && g_have_prev && g_scene_ok && g_depth && g_depth->backend && nb > 0 && !menu_is_open() && !paused;
     g_fg_n = ok ? nb : 0;
+    static int last_fg_n = -1;
+    if (g_fg_n != last_fg_n) {
+        last_fg_n = g_fg_n;
+        LOG("[framegen] mode: %d generated frame(s) per real frame (display %.0f Hz, interval %d, ok %d)\n",
+            g_fg_n, plat_display_hz(), g_present_interval, ok);
+    }
     static int logwhy = -1;  // LARECOMP_LOG_FRAMEGEN=1: why frames went without an in-between one, every 2 s
     if (logwhy < 0) logwhy = getenv("LARECOMP_LOG_FRAMEGEN") != NULL;
     if (logwhy) {

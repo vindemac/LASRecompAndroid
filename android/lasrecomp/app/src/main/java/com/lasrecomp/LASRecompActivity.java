@@ -63,6 +63,7 @@ public class LASRecompActivity extends SDLActivity {
 
     private static native void nativeDeviceStats(float battTempC, float battPct, float watts, int thermal, float headroom,
                                                  float displayHz);
+    private static native void nativeSetDisplayHz(float displayHz);
 
     // Frame generation (runtime/nvn/vulkan/framegen.c): the display's fastest mode at its resolution, for in-between
     // frames at any frame rate (the game's 60 on a 120 Hz display: 120 on the screen); 0: the system's own choice
@@ -71,15 +72,21 @@ public class LASRecompActivity extends SDLActivity {
             android.view.Display d = self.getDisplay();
             if (d == null) return;
             android.view.Display.Mode cur = d.getMode(), pick = null;
-            for (android.view.Display.Mode m : d.getSupportedModes())
-                if (hz > 0 && m.getPhysicalWidth() == cur.getPhysicalWidth() && m.getPhysicalHeight() == cur.getPhysicalHeight()
-                    && m.getRefreshRate() <= hz + 1 && (pick == null || m.getRefreshRate() > pick.getRefreshRate()))
+            for (android.view.Display.Mode m : d.getSupportedModes()) {
+                boolean sameRes = (m.getPhysicalWidth() == cur.getPhysicalWidth() && m.getPhysicalHeight() == cur.getPhysicalHeight())
+                               || (m.getPhysicalWidth() == cur.getPhysicalHeight() && m.getPhysicalHeight() == cur.getPhysicalWidth());
+                if (hz > 0 && sameRes && m.getRefreshRate() <= hz + 1 && (pick == null || m.getRefreshRate() > pick.getRefreshRate()))
                     pick = m;
+            }
             android.view.WindowManager.LayoutParams lp = self.getWindow().getAttributes();
             lp.preferredDisplayModeId = pick != null ? pick.getModeId() : 0;
             lp.preferredRefreshRate = pick != null ? pick.getRefreshRate() : 0;
             self.getWindow().setAttributes(lp);
-            Log.i(TAG, "display mode: " + (pick != null ? pick.getRefreshRate() + " Hz preferred" : "the system's"));
+            Log.i(TAG, "display mode: " + (pick != null ? pick.getRefreshRate() + " Hz preferred (mode " + pick.getModeId() + ")" : "the system's"));
+            if (pick != null) {
+                nativeSetDisplayHz(pick.getRefreshRate());
+            }
+            self.reportDeviceStats();
         });
     }
     // the start screen (runtime/ui/launcher.mm)

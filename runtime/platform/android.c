@@ -566,6 +566,13 @@ JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeDeviceStats(JN
     pthread_mutex_unlock(&g_ds_lock);
 }
 
+JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeSetDisplayHz(JNIEnv *env, jclass cls, jfloat display_hz) {
+    (void)env, (void)cls;
+    pthread_mutex_lock(&g_ds_lock);
+    if (display_hz > 0) g_ds.display_hz = display_hz;
+    pthread_mutex_unlock(&g_ds_lock);
+}
+
 // The display's refresh rate now (from the activity, once a second; 0: not known yet) - vulkan/framegen.c
 float plat_display_hz(void) {
     pthread_mutex_lock(&g_ds_lock);
