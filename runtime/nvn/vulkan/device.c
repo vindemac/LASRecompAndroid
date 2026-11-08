@@ -921,19 +921,13 @@ static void create_swapchain(void) {
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
 #ifdef __ANDROID__
-    // Pre-rotation: match surface orientation so SurfaceFlinger avoids composition rotation
-    bool allow_prerot = !getenv("LARECOMP_NO_PRE_ROTATION");
-    VkSurfaceTransformFlagBitsKHR transform = (allow_prerot && caps.currentTransform) ? caps.currentTransform : VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-    VkExtent2D ext;
-    if (transform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
-        ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)h, (uint32_t)w};
-    } else {
-        ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
-    }
+    // The surface reports the panel's own (portrait) orientation; the window is landscape: images of the window's
+    // size, turned by the compositor (pre-rotation in the app would spare it that: docs/ANDROID-PORT.md, Fase 3)
+    VkExtent2D ext = {(uint32_t)w, (uint32_t)h};
+    VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     g_vk.pre_transform = transform;
-    LOG("[vk] swapchain: surface %ux%u currentTransform %#x preTransform %#x, window %dx%d, present mode %d, images %u-%u\n",
-        caps.currentExtent.width, caps.currentExtent.height, caps.currentTransform, transform, w, h, present_mode(),
-        caps.minImageCount, caps.maxImageCount);
+    LOG("[vk] swapchain: surface %ux%u transform %#x, window %dx%d, present mode %d, images %u-%u\n", caps.currentExtent.width,
+        caps.currentExtent.height, caps.currentTransform, w, h, present_mode(), caps.minImageCount, caps.maxImageCount);
 #else
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
     VkSurfaceTransformFlagBitsKHR transform = caps.currentTransform;
@@ -1290,11 +1284,6 @@ static void bars_backdrop(VkCommandBuffer cb, TexBackend *b, double vx, double v
     if (!on || g_settings.black_bars || crop[2] <= 0 || crop[3] <= 0) return;
     {
         double W = g_vk.sc_extent.width, H = g_vk.sc_extent.height, cw = crop[2] * 0.3, ch = crop[3] * 0.3;
-#ifdef __ANDROID__
-        if (g_vk.pre_transform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
-            double tmp = W; W = H; H = tmp;
-        }
-#endif
         if (vx >= 1) {
             float uv[4] = {crop[0], crop[1], (float)cw, crop[3]};
             vk_present_backdrop(cb, 0, (float)vy, (float)vx, (float)vh, uv, flip, 0.42f);
@@ -1418,11 +1407,6 @@ void backend_present(NvnTexture *t) {
     }
     if (have) {
         double dw = g_vk.sc_extent.width, dh = g_vk.sc_extent.height;
-#ifdef __ANDROID__
-        if (g_vk.pre_transform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
-            double tmp = dw; dw = dh; dh = tmp;
-        }
-#endif
         extern void widescreen_frame_end(uint64_t frame);
         widescreen_frame_end(total_frames);
         extern void widescreen_set_factor(float f);
@@ -1467,13 +1451,7 @@ void backend_present(NvnTexture *t) {
         widescreen_set_factor((float)shape);
         renderer_set_scale((float)sx, (float)sy);
         VkCommandBuffer cb = vk_cmd();
-        float rot = 0.0f;
-#ifdef __ANDROID__
-        if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) rot = 1.0f;
-        else if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR) rot = 2.0f;
-        else if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) rot = 3.0f;
-#endif
-        float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, rot, 0, 0, crop[0], crop[1], crop[2], crop[3]};
+        float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
 #ifdef __ANDROID__

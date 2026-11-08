@@ -5842,11 +5842,7 @@ void vk_present_backdrop(VkCommandBuffer cb, float x, float y, float w, float h,
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
     VkViewport vp = {x, y, w, h, 0, 1};
     vkCmdSetViewport(cb, 0, 1, &vp);
-    float rot = 0.0f;
-    if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) rot = 1.0f;
-    else if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR) rot = 2.0f;
-    else if (g_vk.pre_transform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) rot = 3.0f;
-    float pv[8] = {flip ? 1.0f : 0.0f, rot, light, 0, uvr[0], uvr[1], uvr[2], uvr[3]};
+    float pv[8] = {flip ? 1.0f : 0.0f, 0, light, 0, uvr[0], uvr[1], uvr[2], uvr[3]};
     vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
     vkCmdDraw(cb, 3, 1, 0, 0);
     VkViewport full = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
