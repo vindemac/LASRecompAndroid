@@ -74,7 +74,7 @@ def sanitize_for_speech(raw: bytes) -> str:
             grp, typ, sz = struct.unpack_from('<HHH', raw, i + 1)
             i += 7 + sz
             if grp == 1 and typ == 3:
-                out.append('Link')
+                out.append('Luna')
             continue
         if raw[i] == 0:
             break
@@ -84,6 +84,9 @@ def sanitize_for_speech(raw: bytes) -> str:
         out.append(raw[i:j].decode('utf-8', 'replace'))
         i = j
     text = ''.join(out).strip()
+    text = re.sub(r'\bLink\b', 'Luna', text)
+    text = re.sub(r'\bLINK\b', 'Luna', text)
+    text = re.sub(r'\blink\b', 'Luna', text)
     text = re.sub(r'\s+', ' ', text)
     return text
 
@@ -124,6 +127,7 @@ def call_tts_api(client: genai.Client, text: str, voice: str) -> bytes:
     candidate_models = [
         'gemini-3.8-flash-tts',
         'gemini-3.8-flash-lite-tts',
+        'gemini-2.5-flash-preview-tts',
         'gemini-3.1-flash-tts-preview'
     ]
     last_err = None
@@ -143,7 +147,7 @@ def call_tts_api(client: genai.Client, text: str, voice: str) -> bytes:
                     )
                 )
             )
-            if resp.candidates and resp.candidates[0].content.parts:
+            if resp.candidates and resp.candidates[0].content and resp.candidates[0].content.parts:
                 part = resp.candidates[0].content.parts[0]
                 if part.inline_data and part.inline_data.data:
                     return part.inline_data.data
@@ -156,7 +160,7 @@ def call_tts_api(client: genai.Client, text: str, voice: str) -> bytes:
         raise last_err
     raise RuntimeError('Nenhum dado de áudio retornado pela API')
 
-def generate_voice_pack(files_map: dict, out_dir: str, api_key: str, limit: int = None, delay: float = 21.0, push_adb: bool = True, device_serial: str = None):
+def generate_voice_pack(files_map: dict, out_dir: str, api_key: str, limit: int = None, delay: float = 6.0, push_adb: bool = True, device_serial: str = None):
     client = genai.Client(api_key=api_key)
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -195,7 +199,7 @@ def generate_voice_pack(files_map: dict, out_dir: str, api_key: str, limit: int 
         print(f'[{idx+1}/{len(all_items)}] Gerando [{tipo} | {voice}]: {key} -> "{text[:60]}..."')
 
         success = False
-        retries = 3
+        retries = 10
         while retries > 0 and not success:
             try:
                 audio_data = call_tts_api(client, text, voice)
@@ -212,8 +216,8 @@ def generate_voice_pack(files_map: dict, out_dir: str, api_key: str, limit: int 
             except Exception as e:
                 err_msg = str(e)
                 if '429' in err_msg or 'RESOURCE_EXHAUSTED' in err_msg:
-                    print('   Quota temporária (429). Aguardando 30 segundos...')
-                    time.sleep(30)
+                    print('   [Quota 429] Limite de requisições por minuto atingido. Aguardando 35 segundos...')
+                    time.sleep(35)
                     retries -= 1
                 else:
                     print(f'   Erro ao gerar {key}: {e}')
@@ -226,7 +230,7 @@ def main():
     parser.add_argument('--signboards', action='store_true', help='Gerar somente as placas de sinalização (Place.msbt)')
     parser.add_argument('--npcs', action='store_true', help='Gerar somente os diálogos de NPCs e Cenário')
     parser.add_argument('--limit', type=int, default=None, help='Limite de falas a gerar')
-    parser.add_argument('--delay', type=float, default=21.0, help='Delay entre requisições em segundos (padrão: 21.0)')
+    parser.add_argument('--delay', type=float, default=6.0, help='Delay entre requisições em segundos (padrão: 6.0)')
     parser.add_argument('--specific', nargs='*', help='Chaves específicas a gerar')
     parser.add_argument('--no-push', action='store_true', help='Não enviar automaticamente para o celular via ADB')
     parser.add_argument('--device', default=os.getenv('ANDROID_SERIAL', 'adb-RXCY308MNTN-BnRnBz._adb-tls-connect._tcp'), help='Serial ADB do dispositivo alvo')
@@ -274,15 +278,15 @@ def main():
     files_map = {}
     if args.signboards:
         files_map[f'{base_romfs}/Place.msbt'] = 'SB'
-        files_map[f'{base_romfs}/SubEvent.msbt'] = 'SB'
     elif args.npcs:
         files_map[f'{base_romfs}/Npc.msbt'] = None
         files_map[f'{base_romfs}/Scenario.msbt'] = None
+        files_map[f'{base_romfs}/SubEvent.msbt'] = None
     else:
-        files_map[f'{base_romfs}/Place.msbt'] = 'SB'
-        files_map[f'{base_romfs}/SubEvent.msbt'] = 'SB'
-        files_map[f'{base_romfs}/Npc.msbt'] = None
         files_map[f'{base_romfs}/Scenario.msbt'] = None
+        files_map[f'{base_romfs}/Npc.msbt'] = None
+        files_map[f'{base_romfs}/SubEvent.msbt'] = None
+        files_map[f'{base_romfs}/Place.msbt'] = 'SB'
 
     generate_voice_pack(
         files_map=files_map,
