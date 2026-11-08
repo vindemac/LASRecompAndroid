@@ -3625,7 +3625,7 @@ static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
 // oldest went out, was missed again, came back and pushed out another - the same ranges learned up to 9 times, the
 // lighting flickering in houses and dungeons until the order happened to settle (issue #2, a Mali-G57). A miss in a
 // learned range (left out of a full table) makes it the newest again instead.
-#define GL_MAX 48
+#define GL_MAX 64
 static GcRange gl_learned[GL_MAX];
 static int gl_n;
 

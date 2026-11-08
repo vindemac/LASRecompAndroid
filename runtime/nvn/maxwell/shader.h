@@ -91,10 +91,9 @@ typedef struct {
 #define GMAP_BUFFER_INDEX 20
 #define GFAST_BUFFER_INDEX 21
 #ifdef __ANDROID__
-#define GMAP_MAX 32  // ranges in the table (GMap { uvec4 gmap[GMAP_MAX + 1]; }: [i] = addr lo, addr hi, size, word offset;
-                     // [GMAP_MAX].x = count). 32: a draw's own ranges and the 16 learned ones (vulkan/exec.c gres_learn)
-                     // - at 16 they overflowed after loads, and the draw fell back to the CPU copying it all
-                     // (BOTWRecompAndroid 17fae0d, its #89)
+#define GMAP_MAX 96  // ranges in the table (GMap { uvec4 gmap[GMAP_MAX + 1]; }: [i] = addr lo, addr hi, size, word offset;
+                     // [GMAP_MAX].x = count). 96: accommodates draws with up to 32 bound ranges + 64 learned ranges
+                     // without overflow thrashing in complex outdoor scenes (Field / Mabe Village)
 #else
 #define GMAP_MAX 16
 #endif

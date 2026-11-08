@@ -1,0 +1,29 @@
+--- a/generated/main/main_220.c
++++ b/generated/main/main_220.c
+@@ -4570,4 +4570,4 @@
+     { uint64_t ea = c->x[1] + 0x10ull; uint64_t v = LD64(ea); c->x[8] = (uint64_t)(v); }
+     c->x[19] = (uint64_t)(0ull | c->x[0]);
+     if (c->x[8] == 0) { goto L_7000903460; }
+-    { uint64_t ea = c->x[2] + 0; uint64_t a = LD64(ea), b = LD64(ea + 8); c->x[8] = (uint64_t)(a); c->x[9] = (uint64_t)(b); }
++    { uint64_t ea = c->x[2] + 0; uint64_t a = LD64(ea), b = LD64(ea + 8); c->x[8] = (uint64_t)(a); c->x[9] = (uint64_t)(b); extern void voice_on_msg_lookup(const char *, uint64_t); voice_on_msg_lookup((const char *)(uintptr_t)a, b); }
+--- a/generated/main/main_331.c
++++ b/generated/main/main_331.c
+@@ -11765,6 +11765,7 @@
+     c->x[8] = (uint32_t)(0x1d1aull);
+     { uint64_t ea = c->x[0] + c->x[8]; uint64_t v = LD8(ea); c->x[8] = (uint64_t)(v); }
+     c->x[19] = (uint64_t)(0ull | c->x[0]);
++    /* Instant Text: bypass typewriter loop and sound */
+     if (0) { goto L_7000ef17bc; }
+ L_7000ef1738:;
+@@ -13244,4 +13245,6 @@
+     c->x[29] = (uint64_t)(c->sp + 0x20ull);
+     c->x[19] = (uint64_t)(0ull | c->x[0]);
+     c->x[30] = (GB + 0xef2bb8ull); f_7000ef5ed0(c);
++    /* Instant Text: bypass typewriter timer and transition immediately to wait state */
+     if (0) { goto L_7000ef2c58; }
+@@ -16218,5 +16221,6 @@
+     c->x[8] = (uint32_t)(0x1d1aull);
+     { uint64_t ea = c->x[19] + c->x[8]; uint64_t v = LD8(ea); c->x[8] = (uint64_t)(v); }
+     { uint64_t ea = c->x[19] + 0xe18ull; uint64_t v = LD64(ea); c->x[20] = (uint64_t)(v); }
++    /* Instant Text: always jump directly into full text render on page display */
+     if (0) { goto L_7000ef4d28; }
