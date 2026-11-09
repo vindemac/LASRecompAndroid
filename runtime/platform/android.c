@@ -908,8 +908,6 @@ static void adpf_work_locked(int slot, uint64_t work_ns, uint64_t target_ns, uin
                 s_last_error = r;
                 static bool told;
                 if (!told) { told = true; LOG("[android] performance hint with GPU: error %d\n", r); }
-            } else {
-                return;
             }
         }
         if (work_ns) {

@@ -48,6 +48,10 @@ Settings g_settings = {
     .chaos_letters = CHAOS_LETTERS_MAP,
     .diff_damage = 1.0f,
     .upscaler = UPSCALE_SHARP,  // (MetalFX on macOS, AMD FSR 1 on Windows)
+    .vsync = VSYNC_MAILBOX,
+    .aniso = AF_AUTO,
+    .sharpness = 0.8f,
+    .shadows = true,
 };
 
 // The game's own text languages: its RomFS carries these per region (regionUS/USen|USes|USfr, regionEU/EUen|EUes|...,
@@ -151,11 +155,13 @@ void settings_load(void) {
     loaded = true;
 #ifdef __ANDROID__
     if (plat_is_snapdragon_8_elite()) {
-        g_settings.upscaler = UPSCALE_SGSR2;
+        g_settings.upscaler = UPSCALE_SGSR1;
         g_settings.res_mode = RES_Q75;
         g_settings.fps_mode = 2;
-        g_settings.frame_gen = true;
-        g_settings.frame_gen_120 = true;
+        g_settings.shadows = true;
+        g_settings.frame_gen = false;
+        g_settings.frame_gen_120 = false;
+        g_settings.antialias = AA_OFF;
     }
 #endif
     FILE *f = fopen(SETTINGS_FILE, "r");
@@ -232,7 +238,18 @@ void settings_load(void) {
         else if (!strcmp(key, "upscaler") && !strcmp(val, "sgsr1")) g_settings.upscaler = UPSCALE_SGSR1;
 #endif
         else if (!strcmp(key, "upscaler")) g_settings.upscaler = !strcmp(val, "bilinear") ? UPSCALE_BILINEAR : UPSCALE_SHARP;  // (metalfx / fsr1: this OS's)
-        else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
+        else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : !strcmp(val, "fxaa") ? AA_FXAA : !strcmp(val, "taa") ? AA_TAA : AA_SMAA;
+        else if (!strcmp(key, "vsync")) g_settings.vsync = !strcmp(val, "fifo") ? VSYNC_FIFO : !strcmp(val, "immediate") ? VSYNC_IMMEDIATE : VSYNC_MAILBOX;
+        else if (!strcmp(key, "aniso") || !strcmp(key, "anisotropic")) {
+            int a = atoi(val);
+            g_settings.aniso = (a == 1 || a == 2 || a == 4 || a == 8 || a == 16) ? a : AF_AUTO;
+        }
+        else if (!strcmp(key, "sharpness") || !strcmp(key, "fsr_sharpness")) {
+            g_settings.sharpness = (float)atof(val);
+            if (g_settings.sharpness < 0.0f) g_settings.sharpness = 0.0f;
+            if (g_settings.sharpness > 1.0f) g_settings.sharpness = 1.0f;
+        }
+        else if (!strcmp(key, "shadows")) g_settings.shadows = atoi(val) != 0;
         else if (!strcmp(key, "inv_keys")) g_settings.inv_keys = atoi(val) != 0;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "move_360")) g_settings.move_360 = atoi(val) != 0;
@@ -268,6 +285,16 @@ void settings_load(void) {
     if (!aspect_key) g_settings.aspect_asked = true;  // (likewise: the aspect ratio was chosen already)
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
+#ifdef __ANDROID__
+    if (plat_is_snapdragon_8_elite()) {
+        g_settings.upscaler = UPSCALE_SGSR1;
+        g_settings.antialias = AA_OFF;
+        g_settings.frame_gen = false;
+        g_settings.frame_gen_120 = false;
+        g_settings.fps_mode = 2; // 60 FPS
+    }
+#endif
+
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 }
 
@@ -318,7 +345,13 @@ void settings_save(void) {
     fprintf(f, "upscaler = %s\n", g_settings.upscaler == UPSCALE_METALFX ? "metalfx" : g_settings.upscaler == UPSCALE_FSR1 ? "fsr1"
                                   : g_settings.upscaler == UPSCALE_SGSR2 ? "sgsr2"
                                   : g_settings.upscaler == UPSCALE_SGSR1 ? "sgsr1" : "bilinear");
-    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_FXAA ? "fxaa" : g_settings.antialias == AA_TAA ? "taa"
+                                  : g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    static const char *const vsync_names[] = {"mailbox", "fifo", "immediate"};
+    fprintf(f, "vsync = %s\n", vsync_names[g_settings.vsync >= 0 && g_settings.vsync <= 2 ? g_settings.vsync : 0]);
+    fprintf(f, "aniso = %d\n", g_settings.aniso);
+    fprintf(f, "sharpness = %.2f\n", g_settings.sharpness);
+    fprintf(f, "shadows = %d\n", g_settings.shadows ? 1 : 0);
     if (g_settings.res_mode == RES_DYNAMIC) fprintf(f, "resolution = dynamic\n");
     else if (g_settings.res_mode == RES_Q75) fprintf(f, "resolution = 75%%\n");
     else if (g_settings.res_mode == RES_Q25) fprintf(f, "resolution = 25%%\n");

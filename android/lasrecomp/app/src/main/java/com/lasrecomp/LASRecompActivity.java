@@ -168,6 +168,7 @@ public class LASRecompActivity extends SDLActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        preferRefreshRate(120.0f);
         stats.post(report);
         PlayService.start(this);  // (keeps the game alive at the home screen: PlayService.java)
     }

@@ -42,6 +42,7 @@ void mods_tab_draw(float scale);  // mods_tab.mm
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
 #include "../paths.h"
+void vk_samplers_invalidate(void);
 }
 
 // ------------------------------------------------------------------ state shared with the main thread
@@ -523,22 +524,23 @@ static void tab_display(void) {
     }
     {
         static const char *fr[] = {"Auto (30 / 60)", "30 fps", "60 fps"};
-#ifdef __ANDROID__
         opt_choice("Frame rate", &g_settings.fps_mode, fr, 3, 1,
                    "The game runs in steps of a 60 Hz clock: at 60 fps one step per frame, at 30 fps two. Auto: the "
                    "game picks, as on the Switch, and drops to 30 where 60 doesn't fit. 30 fps: targets a fixed 30; "
                    "actual performance depends on your device and settings. "
                    "60 fps: always 60 - where a frame takes longer, the game runs in slow motion (it can't run above "
                    "60: it would speed up).");
-#else
-        opt_choice("Frame rate", &g_settings.fps_mode, fr, 3, 0,
-                   "The game runs in steps of a 60 Hz clock: at 60 fps one step per frame, at 30 fps two. Auto: the "
-                   "game picks, as on the Switch, and drops to 30 where 60 doesn't fit. 30 fps: always 30, steady. "
-                   "60 fps: always 60 - where a frame takes longer, the game runs in slow motion (it can't run above "
-                   "60: it would speed up).");
-#endif
     }
 #endif
+    {
+        static const char *vsync_modes[] = {"Mailbox (Uncapped)", "FIFO (V-Sync)", "Immediate (Tearing)"};
+        int vi = g_settings.vsync;
+        if (opt_choice("V-Sync / Present mode", &vi, vsync_modes, 3, VSYNC_MAILBOX,
+                       "How frames are presented to the display. Mailbox: lowest latency without screen tearing (default). "
+                       "FIFO: standard vertical synchronization locked to display refresh rate. Immediate: presentation without synchronization (may cause tearing).")) {
+            g_settings.vsync = vi;
+        }
+    }
 
     opt_section("Rendering");
     // display order -> RES_* (the ini / enum order predates the menu order)
@@ -604,10 +606,39 @@ static void tab_display(void) {
         if (opt_choice("Upscaler", &ui, ups, 2, 1, ud)) g_settings.upscaler = ui ? UPSCALE_SHARP : UPSCALE_BILINEAR;
 #endif
     }
-    static const char *aa[] = {"Off", "SMAA"};
-    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
-               "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
-               "blends only along them, so textures stay sharp. Most useful at a lower internal resolution.");
+    {
+        float sharp_pct = roundf(g_settings.sharpness * 100.0f);
+        if (g_settings.upscaler == UPSCALE_BILINEAR) opt_disable_next();
+        if (opt_slider("Upscaler sharpness", &sharp_pct, 0.0f, 100.0f, 5.0f, 80.0f, "%.0f%%",
+                       "Sharpening strength for FSR 1 and Snapdragon GSR upscalers (AMD default: 80%).")) {
+            g_settings.sharpness = sharp_pct / 100.0f;
+        }
+    }
+    {
+        static const char *aa[] = {"Off", "FXAA", "SMAA", "TAA"};
+        opt_choice("Anti-aliasing", &g_settings.antialias, aa, 4, AA_OFF,
+                   "Smooths jagged edges. Off: sharp pixels. FXAA: fast 1-pass edge smoothing, recommended for mobile and performance. "
+                   "SMAA: subpixel morphological anti-aliasing with sharp textures. TAA: temporal anti-aliasing with camera reprojection (falls back to FXAA on 2D menus).");
+    }
+    {
+        static const char *aniso_names[] = {"Auto", "Off", "2x", "4x", "8x", "16x"};
+        static const int aniso_vals[] = {AF_AUTO, AF_OFF, AF_2X, AF_4X, AF_8X, AF_16X};
+        int cur_aniso = 0;
+        for (int i = 0; i < 6; i++) if (aniso_vals[i] == g_settings.aniso) cur_aniso = i;
+        if (opt_choice("Anisotropic filtering", &cur_aniso, aniso_names, 6, 0,
+                       "Sharpens textures viewed at oblique angles (ground, pathways, walls). Auto: game defaults. Off: disabled. 2x-16x: forced anisotropic filtering quality.")) {
+            g_settings.aniso = aniso_vals[cur_aniso];
+            vk_samplers_invalidate();
+        }
+    }
+    {
+        bool sh = g_settings.shadows;
+        if (opt_toggle("Shadows", &sh, true,
+                       "Enables dynamic shadow maps. Disabling shadows improves frame rate on lower-end hardware.")) {
+            g_settings.shadows = sh;
+            vk_samplers_invalidate();
+        }
+    }
 #ifdef __ANDROID__
     opt_toggle("32-bit shader math", &g_settings.shader_int32, false,
                "Translates the game's shaders with 32-bit address math, the path used for drivers without 64-bit "

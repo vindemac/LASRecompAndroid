@@ -871,8 +871,10 @@ void vk_pipeline_cache_save(void) {
 // ================================================================== swapchain
 static bool swapchain_readback = true;  // (Android: false where the surface can't be a transfer source)
 static bool sc_want_fifo;
+static VkPresentModeKHR sc_present_mode;
 static const char *wanted_present_mode_name(void) {
     const char *e = getenv("LARECOMP_VK_PRESENT");
+    if (e) return e;
 #ifdef __ANDROID__
     // Frame generation (framegen.c): FIFO, which shows the in-between frame, presented right after the real one, a
     // refresh later (mailbox would replace it before it is ever shown). On a 60 Hz display (e.g. DeX) in 60 FPS mode,
@@ -881,9 +883,11 @@ static const char *wanted_present_mode_name(void) {
     extern float plat_display_hz(void);
     float dhz = plat_display_hz();
     bool fg_fifo = fg_enabled() && !(g_settings.fps_mode == 2 && dhz > 0.0f && dhz <= 62.0f);
-    if (!e && fg_fifo) e = "fifo";
+    if (fg_fifo) return "fifo";
 #endif
-    return e;
+    if (g_settings.vsync == VSYNC_FIFO) return "fifo";
+    if (g_settings.vsync == VSYNC_IMMEDIATE) return "immediate";
+    return "mailbox";
 }
 static VkPresentModeKHR present_mode(void) {
     // MAILBOX by default: the game paces itself (vi.c's emulated 60 Hz vsync), and with FIFO every submission
@@ -981,14 +985,15 @@ static void create_swapchain(void) {
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 #endif
     VkSwapchainKHR old = g_vk.swapchain;
-    const char *pm_name = wanted_present_mode_name();
-    sc_want_fifo = pm_name && !strcmp(pm_name, "fifo");
+    VkPresentModeKHR pm = present_mode();
+    sc_present_mode = pm;
+    sc_want_fifo = pm == VK_PRESENT_MODE_FIFO_KHR;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
         .imageUsage = usage,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = transform,
-        .compositeAlpha = alpha, .presentMode = present_mode(), .clipped = VK_TRUE,
+        .compositeAlpha = alpha, .presentMode = pm, .clipped = VK_TRUE,
         .oldSwapchain = old};
 #ifdef __ANDROID__
     VkResult sr = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain);
@@ -1066,6 +1071,8 @@ static void android_create_surface(struct ANativeWindow *aw) {
     VkAndroidSurfaceCreateInfoKHR si = {.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, .window = aw};
     VK_CHECK(vkCreateAndroidSurfaceKHR(g_vk.inst, &si, NULL, &g_vk.surface));
     surface_aw = aw;
+    extern bool plat_is_snapdragon_8_elite(void);
+    if (surface_hz <= 0.0f && plat_is_snapdragon_8_elite()) surface_hz = 120.0f;
     surface_rate_apply(aw);
 }
 
@@ -1126,9 +1133,8 @@ bool vk_frame_begin(const float clear[4]) {
 #ifdef __ANDROID__
     if (!android_surface_ready()) return false;
 #endif
-    const char *pm_name = wanted_present_mode_name();
-    bool want_fifo = pm_name && !strcmp(pm_name, "fifo");
-    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height || want_fifo != sc_want_fifo)
+    VkPresentModeKHR cur_pm = present_mode();
+    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height || cur_pm != sc_present_mode)
         recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;

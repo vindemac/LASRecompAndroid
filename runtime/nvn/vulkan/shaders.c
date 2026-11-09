@@ -367,6 +367,54 @@ static const char *builtin_src(const char *name, int *stage) {
         }
         return src[k];
     }
+    // Fast Approximate Anti-Aliasing (FXAA 3.11 Quality)
+    if (!strcmp(name, "fxaa.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "precision highp float;\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "#define FXAA_REDUCE_MIN (1.0 / 128.0)\n"
+               "#define FXAA_REDUCE_MUL (1.0 / 8.0)\n"
+               "#define FXAA_SPAN_MAX 8.0\n"
+               "float rgb2luma(vec3 rgb) { return dot(rgb, vec3(0.299, 0.587, 0.114)); }\n"
+               "void main() {\n"
+               "  vec2 rcpFrame = pc.a.xy;\n"
+               "  vec2 uv = gl_FragCoord.xy * rcpFrame;\n"
+               "  vec3 rgbNW = textureLod(t0, uv + vec2(-1.0, -1.0) * rcpFrame, 0.0).rgb;\n"
+               "  vec3 rgbNE = textureLod(t0, uv + vec2( 1.0, -1.0) * rcpFrame, 0.0).rgb;\n"
+               "  vec3 rgbSW = textureLod(t0, uv + vec2(-1.0,  1.0) * rcpFrame, 0.0).rgb;\n"
+               "  vec3 rgbSE = textureLod(t0, uv + vec2( 1.0,  1.0) * rcpFrame, 0.0).rgb;\n"
+               "  vec3 rgbM  = textureLod(t0, uv, 0.0).rgb;\n"
+               "  float lumaNW = rgb2luma(rgbNW);\n"
+               "  float lumaNE = rgb2luma(rgbNE);\n"
+               "  float lumaSW = rgb2luma(rgbSW);\n"
+               "  float lumaSE = rgb2luma(rgbSE);\n"
+               "  float lumaM  = rgb2luma(rgbM);\n"
+               "  float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));\n"
+               "  float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));\n"
+               "  if (lumaMax - lumaMin < max(0.05, lumaMax * 0.125)) {\n"
+               "    o = vec4(rgbM, 1.0);\n"
+               "    return;\n"
+               "  }\n"
+               "  vec2 dir;\n"
+               "  dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));\n"
+               "  dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));\n"
+               "  float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * FXAA_REDUCE_MUL), FXAA_REDUCE_MIN);\n"
+               "  float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);\n"
+               "  dir = min(vec2(FXAA_SPAN_MAX), max(vec2(-FXAA_SPAN_MAX), dir * rcpDirMin)) * rcpFrame;\n"
+               "  vec3 rgbA = 0.5 * (\n"
+               "    textureLod(t0, uv + dir * (1.0/3.0 - 0.5), 0.0).rgb +\n"
+               "    textureLod(t0, uv + dir * (2.0/3.0 - 0.5), 0.0).rgb);\n"
+               "  vec3 rgbB = rgbA * 0.5 + 0.25 * (\n"
+               "    textureLod(t0, uv + dir * -0.5, 0.0).rgb +\n"
+               "    textureLod(t0, uv + dir *  0.5, 0.0).rgb);\n"
+               "  float lumaB = rgb2luma(rgbB);\n"
+               "  if ((lumaB < lumaMin) || (lumaB > lumaMax)) o = vec4(rgbA, 1.0);\n"
+               "  else o = vec4(rgbB, 1.0);\n"
+               "}\n";
+    }
     // AMD FidelityFX Super Resolution 1 (MIT), EASU: edge-adaptive upscale. a = (in / out scale xy, offset zw),
     // b.xy = input size. 12 taps around the source pixel, direction / edge length from luma, Lanczos-2-like
     // weights stretched along the edge, clamped to the nearest 4 (no ringing).

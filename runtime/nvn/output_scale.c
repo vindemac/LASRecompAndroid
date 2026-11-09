@@ -125,6 +125,9 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     else {
         h = reshape ? dh / 1080.0 : fit;  // Match display
         if (mode == RES_DYNAMIC) { dyn_update(now, gpu_ms); h *= g_dyn; }
+#ifdef __ANDROID__
+        else if (mode == RES_Q75 && plat_is_snapdragon_8_elite()) h *= 0.68;
+#endif
         else if (mode == RES_Q75) h *= 0.75;
         else if (mode == RES_Q25) h *= 0.25;
         else if (mode == RES_Q50) h *= 0.5;

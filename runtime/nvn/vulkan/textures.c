@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "vk.h"
+#include "../../settings.h"
 #include "../astc.h"
 #include "../tex_hash.h"
 #include "../renderer.h"
@@ -320,7 +321,7 @@ void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags as
 }
 
 // Images destroyed by the guest are kept until the submissions that may use them have completed.
-typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq; } Dead;
+typedef struct { VkImage img; VmaAllocation mem; VkImageView view; VkSampler smp; uint64_t seq; } Dead;
 static Dead *dead;
 static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
@@ -341,7 +342,8 @@ void vk_collect_dead(void) {
     int k = 0;
     for (int i = 0; i < ndead; i++) {
         if (dead[i].seq > done) { dead[k++] = dead[i]; continue; }
-        if (dead[i].view) vk_rp_forget_view(dead[i].view), vkDestroyImageView(g_vk.dev, dead[i].view, NULL);
+        if (dead[i].smp) vkDestroySampler(g_vk.dev, dead[i].smp, NULL);
+        else if (dead[i].view) vk_rp_forget_view(dead[i].view), vkDestroyImageView(g_vk.dev, dead[i].view, NULL);
         else vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
     }
     ndead = k;
@@ -566,6 +568,22 @@ static void defer(Dead d) {
 
 void vk_defer_image(VkImage img, VmaAllocation mem) { defer((Dead){.img = img, .mem = mem}); }
 void vk_defer_view(VkImageView v) { defer((Dead){.view = v}); }
+void vk_defer_sampler(VkSampler s) { defer((Dead){.smp = s}); }
+
+extern NvnDescPool *g_sampler_pools[64];
+void vk_samplers_invalidate(void) {
+    for (int p = 0; p < 64; p++) {
+        NvnDescPool *pool = g_sampler_pools[p];
+        if (!pool || !pool->entries) continue;
+        NvnSamplerDesc *entries = (NvnSamplerDesc *)pool->entries;
+        for (int i = 0; i < pool->count; i++) {
+            if (entries[i].backend) {
+                vk_defer_sampler((VkSampler)entries[i].backend);
+                entries[i].backend = NULL;
+            }
+        }
+    }
+}
 
 void vk_dl_note_upload(void *img, uint32_t w, uint32_t h, uint32_t lv);  // (exec.c: LARECOMP_VK_DEVLOST_TRACE)
 
@@ -1147,7 +1165,14 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     if (mf <= 1) si.maxLod = si.minLod + 0.25f;  // not mipmapped: stay on the base level
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     si.mipLodBias = d->lod_bias;
-    if (d->max_aniso > 1) { si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = fminf(d->max_aniso, 16); }
+    float max_aniso = 1.0f;
+    if (g_settings.aniso == AF_AUTO) max_aniso = d->max_aniso;
+    else if (g_settings.aniso > 1) max_aniso = (float)g_settings.aniso;
+    else max_aniso = 1.0f;
+    if (max_aniso > 1.0f) {
+        si.anisotropyEnable = VK_TRUE;
+        si.maxAnisotropy = fminf(max_aniso, g_vk.props.limits.maxSamplerAnisotropy > 1.0f ? g_vk.props.limits.maxSamplerAnisotropy : 16.0f);
+    }
     static float lodmin = -1;
     if (lodmin < 0) lodmin = getenv("LARECOMP_LOD_MIN") ? (float)atof(getenv("LARECOMP_LOD_MIN")) : 0;
     if (lodmin > 0 && mf > 1) si.minLod = fmaxf(si.minLod, lodmin);
@@ -1156,7 +1181,8 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     if (stest && mf > 1) { si.minLod = 0; si.maxLod = VK_LOD_CLAMP_NONE; si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = 16; }
     if (d->compare_mode) {
         si.compareEnable = VK_TRUE;
-        si.compareOp = getenv("LARECOMP_NO_SHADOW") ? VK_COMPARE_OP_ALWAYS : compare_op(d->compare_func);
+        bool shadows_on = g_settings.shadows && !getenv("LARECOMP_NO_SHADOW");
+        si.compareOp = shadows_on ? compare_op(d->compare_func) : VK_COMPARE_OP_ALWAYS;
     }
     VkSamplerCustomBorderColorCreateInfoEXT cb = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
     if (border) {

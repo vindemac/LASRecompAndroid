@@ -74,6 +74,7 @@ static uint64_t submit_seq;  // last submitted
 // which waits for a window image: its waits followed the compositor (SyncWait 8-17 ms a frame) rather than its own
 // GPU work, all of which is ahead of the present in the queue. LARECOMP_FENCE_PRESENT=1: as before.
 static uint64_t work_seq;
+static uint64_t prev_work_seq;
 static bool game_pending;
 static uint64_t last_submit_ns;  // (begin_pass: LARECOMP_VK_CHUNK_US)
 #endif
@@ -436,8 +437,12 @@ void vk_pace_frame(void) {
 static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *entry, uint64_t value) {
     if (!start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
 #ifdef __ANDROID__
+    extern bool plat_is_snapdragon_8_elite(void);
     static int fast = -1;
-    if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") ? atoi(getenv("LARECOMP_FAST_COUNTERS")) : 0;
+    if (fast < 0) {
+        const char *e = getenv("LARECOMP_FAST_COUNTERS");
+        fast = e ? atoi(e) : (plat_is_snapdragon_8_elite() || g_vk.is_adreno_830 ? 1 : 0);
+    }
     if ((!pace_slow && pace_on > 0 && (fast || g_settings.fps_mode == 2)) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
         uint64_t max = start_entry[1] + ns_to_gpu_ticks(PACE_FAST_NS);
         return value > max ? max : value;
@@ -581,7 +586,7 @@ static void upload_begin_barrier(VkCommandBuffer cb) {
     static int narrow = -1;
     if (narrow < 0) {
         const char *e = getenv("LARECOMP_VK_UPLOAD_BARRIER");
-        narrow = e && atoi(e) != 0;  // experimental: no repeatable frame-time benefit established yet
+        narrow = e && atoi(e) != 0;
     }
     if (narrow) {
         // This buffer only records copies, clears and initial image-layout transitions. Prior submissions may
@@ -825,7 +830,14 @@ void renderer_wait_seq(uint64_t seq) {
     if (!seq) return;
     pthread_mutex_lock(&seq_lock);
     uint64_t s = submit_seq;
+#ifdef __ANDROID__
+    uint64_t pw = prev_work_seq, w = work_seq;
+#endif
     pthread_mutex_unlock(&seq_lock);
+#ifdef __ANDROID__
+    extern bool vk_async_on(void);
+    if (vk_async_on() && seq == w && pw > 0 && pw < seq) seq = pw;
+#endif
     wait_why = seq > s ? "SyncWait (fence not submitted yet)" : "SyncWait";
 #ifdef __ANDROID__
     vk_timing_trace_fence(seq, s);
@@ -833,9 +845,16 @@ void renderer_wait_seq(uint64_t seq) {
     static int log = -1;  // LARECOMP_LOG_SYNCSEQ=1: which submission each SyncWait waits for (vs the last one) and how long
     if (log < 0) log = getenv("LARECOMP_LOG_SYNCSEQ") != NULL;
     uint64_t t0 = log ? SDL_GetTicksNS() : 0;
-    vk_wait_seq(seq > s ? s : seq);  // not submitted yet (other thread): everything submitted so far
-    if (log) LOG("[syncseq] t %.2f wait seq %llu (submitted %llu): %.2f ms, frame %llu\n", t0 / 1e6, (unsigned long long)seq,
-                 (unsigned long long)s, (SDL_GetTicksNS() - t0) / 1e6, (unsigned long long)vk_frame_counter());
+    if (seq > s) seq = s;
+    if (seq) vk_wait_seq(seq);  // not submitted yet (other thread): everything submitted so far
+#ifdef __ANDROID__
+    uint64_t done = vk_completed_seq();
+    cq_resolve_done(done);
+    gcopy_retire(done);
+#endif
+    if (log) LOG("[syncseq] t %.2f wait seq %llu (target %llu, submitted %llu): %.2f ms, frame %llu\n", t0 / 1e6,
+                 (unsigned long long)seq, (unsigned long long)seq, (unsigned long long)s, (SDL_GetTicksNS() - t0) / 1e6,
+                 (unsigned long long)vk_frame_counter());
 }
 
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
@@ -1271,7 +1290,11 @@ static void st_defaults(void) {
 }
 
 void vk_exec_init(void) {
+#ifdef __ANDROID__
+    prof = 1;
+#else
     prof = getenv("LARECOMP_VK_PROF") != NULL;
+#endif
 #ifdef __ANDROID__
     gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");
     if (gcopy_mode) LOG("[vk] no heap import: shader global memory through CPU copies\n");
@@ -1375,12 +1398,9 @@ static void begin_pass(void) {
         // LARECOMP_VK_CHUNK_US of translation has gone by. Translating a whole frame and then running it on the GPU
         // (~6 + ~11 ms) was the frame's critical path: the game waits on the previous frame's fence.
         extern bool vk_async_on(void);
+        extern bool vk_driver_is_qualcomm(void);
         static long chunk = -1;
         if (chunk < 0) {
-            // (not on Qualcomm's driver: its render thread is slow - ~12 ms a frame in the copy mode - so the GPU sat
-            // idle between the chunks, and the game, timing its frames on the GPU from start to end, saw the gaps as
-            // GPU time and stayed at 30 even indoors; a whole frame at once, it chose 60 there)
-            extern bool vk_driver_is_qualcomm(void);
             const char *e = getenv("LARECOMP_VK_CHUNK_US");
             chunk = e ? atol(e) : vk_driver_is_qualcomm() ? 0 : 2000;
         }
@@ -3439,7 +3459,7 @@ typedef struct { uint64_t lo, hi; bool store, learned; } GcRange;  // heap offse
 #define GA_RES (48ull << 20)    // [0, GA_RES): resident slots; the rest: the ring
 #define GA_SEG (8ull << 20)
 #define GA_NRES 512
-typedef struct { uint64_t lo, hi, off, checked; uint8_t *shadow; bool live; uint64_t *bseq; } GaRes;  // (bseq: per 256 B)
+typedef struct { uint64_t lo, hi, off, checked; uint8_t *shadow; bool live, store; uint64_t *bseq; } GaRes;  // (bseq: per 256 B)
 static GaRes ga_res[GA_NRES];
 static int ga_nres;
 static VkBuffer ga_buf;
@@ -3558,8 +3578,10 @@ static void gres_sync(GaRes *e) {
         uint64_t n = b - s0;
         VkSpan sp = vk_transient(n, 256);
         memcpy(sp.ptr, g + s0, n);
+        pthread_mutex_lock(&gc_lock);
         memcpy(e->shadow + s0, g + s0, n);
         for (uint64_t k = s0 / 256; k < (s0 + n + 255) / 256; k++) e->bseq[k] = pend;
+        pthread_mutex_unlock(&gc_lock);
         VkCommandBuffer up = vk_upload_cmd();
         if (up != barrier_cb || pend != barrier_seq) { vk_full_barrier(up); barrier_cb = up; barrier_seq = pend; }
         VkBufferCopy cp = {sp.off, e->off + s0, n};
@@ -3567,6 +3589,10 @@ static void gres_sync(GaRes *e) {
         stat_gres_sync += n;
     }
 }
+
+#define GL_MAX 64
+static GcRange gl_learned[GL_MAX];
+static int gl_n;
 
 // The live resident entry covering heap [lo, hi); create: else a new one for it (and any it overlaps)
 static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
@@ -3597,7 +3623,7 @@ static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
     uint64_t *bseq = calloc((len + 255) / 256, sizeof *bseq);
     if (!shadow || !bseq) { free(shadow); free(bseq); return NULL; }
     const uint8_t *g = (const uint8_t *)(uintptr_t)(HEAP_BASE + ulo);
-    *n = (GaRes){ulo, uhi, ga_res_top, renderer_present_count() + 1, shadow, true, bseq};  // (synced: this frame)
+    *n = (GaRes){ulo, uhi, ga_res_top, renderer_present_count() + 1, shadow, true, false, bseq};  // (synced: this frame)
     ga_res_top += (len + 255) & ~255ull;
     memcpy(shadow, g, len);
     memcpy(ga_ptr + n->off, g, len);  // (a new slot: nothing on the GPU uses it yet)
@@ -3626,21 +3652,18 @@ static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
 // oldest went out, was missed again, came back and pushed out another - the same ranges learned up to 9 times, the
 // lighting flickering in houses and dungeons until the order happened to settle (issue #2, a Mali-G57). A miss in a
 // learned range (left out of a full table) makes it the newest again instead.
-#define GL_MAX 64
-static GcRange gl_learned[GL_MAX];
-static int gl_n;
-
 static void gres_learn(uint32_t off) {
+    GaRes *in = NULL;
+    for (int i = 0; i < ga_nres && !in; i++)
+        if (ga_res[i].live && ga_res[i].lo <= off && off < ga_res[i].hi) in = &ga_res[i];
     for (int i = 0; i < gl_n; i++)
         if (gl_learned[i].lo <= off && off < gl_learned[i].hi) {
             GcRange g = gl_learned[i];
+            if (in && in->store) g.store = true;
             memmove(gl_learned + i, gl_learned + i + 1, sizeof g * (gl_n - 1 - i));
             gl_learned[gl_n - 1] = g;
             return;
         }
-    GaRes *in = NULL;
-    for (int i = 0; i < ga_nres && !in; i++)
-        if (ga_res[i].live && ga_res[i].lo <= off && off < ga_res[i].hi) in = &ga_res[i];
     if (!in) {  // (data the CPU writes, reached by pointer - the lights' parameters, objects' data: resident too, a
                 // window around it between the ranges already resident - 64 KB before, 256 KB after: the objects'
                 // data grows upward as the game allocates (walking around: a miss, and wrong shadows, for every
@@ -3656,10 +3679,17 @@ static void gres_learn(uint32_t off) {
         }
         if (hi <= lo || !(in = gres_get(lo, hi, true))) return;
     }
-    if (gl_n == GL_MAX) memmove(gl_learned, gl_learned + 1, sizeof gl_learned[0] * --gl_n);
-    gl_learned[gl_n++] = (GcRange){in->lo, in->hi};
-    LOG("[vk] global memory: shaders reach heap %x outside their tables - %llx+%llx goes in every table\n", off,
-        (unsigned long long)in->lo, (unsigned long long)(in->hi - in->lo));
+    if (gl_n == GL_MAX) {
+        int victim = 0;
+        for (int i = 0; i < gl_n; i++) {
+            if (!gl_learned[i].store) { victim = i; break; }
+        }
+        memmove(gl_learned + victim, gl_learned + victim + 1, sizeof gl_learned[0] * (gl_n - 1 - victim));
+        gl_n--;
+    }
+    gl_learned[gl_n++] = (GcRange){in->lo, in->hi, in->store};
+    LOG("[vk] global memory: shaders reach heap %x outside their tables - %llx+%llx%s goes in every table\n", off,
+        (unsigned long long)in->lo, (unsigned long long)(in->hi - in->lo), in->store ? " (STORE)" : "");
 }
 
 // Load-only arena copies are immutable until their submission retires. Compare against that exact copy;
@@ -3672,8 +3702,10 @@ static uint64_t ga_load_copy(uint64_t at, uint64_t size) {
     unsigned slot = (unsigned)((at >> 8) ^ (size >> 8)) & 63;
     const uint8_t *src = (const uint8_t *)(uintptr_t)(HEAP_BASE + at);
     if (reuse && cache[slot].valid && cache[slot].seq == seq && cache[slot].gen == gcopy_gen &&
-        cache[slot].at == at && cache[slot].size == size && !memcmp(ga_ptr + cache[slot].off, src, size))
+        cache[slot].at == at && cache[slot].size == size && !memcmp(ga_ptr + cache[slot].off, src, size)) {
+        ga_seg_seq[cache[slot].off / GA_SEG] = vk_pending_seq();
         return cache[slot].off;
+    }
     uint64_t off = ga_ring(size);
     if (off == ~0ull) return off;
     memcpy(ga_ptr + off, src, size);
@@ -3753,7 +3785,7 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
     after[m] = 0;
     for (int i = m - 1; i >= 0; i--) {
         need[i] = r[i].store ? 1 : gres_need(r[i].lo, r[i].hi);
-        after[i] = after[i + 1] + (r[i].learned ? 0 : need[i]);
+        after[i] = after[i + 1] + (r[i].learned && !r[i].store ? 0 : need[i]);
     }
     uint32_t tab[(GMAP_MAX + 1) * 4];
     memset(tab, 0, sizeof tab);
@@ -3768,10 +3800,12 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
     } while (0)
     for (int i = 0; i < m; i++) {
         uint64_t lo = r[i].lo, hi = r[i].hi;
-        if (r[i].learned && n + need[i] + after[i + 1] > GMAP_MAX) { stat_gres_fail[4]++; continue; }
+        if (r[i].learned && !r[i].store && n + need[i] + after[i + 1] > GMAP_MAX) { stat_gres_fail[4]++; continue; }
         if (r[i].store) {  // a storing shader's bound ranges: resident from now on
             GaRes *e = gres_get(lo, hi, true);
             if (!e) { stat_gres_fail[0]++; return false; }
+            e->store = true;
+            gres_learn((uint32_t)lo);
             gres_sync(e);
             GRES_ADD(lo, hi - lo, e->off + (lo - e->lo));
             stat_gres_res++;
@@ -3850,7 +3884,7 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
     memset(gmap_tab, 0, sizeof gmap_tab);
     gfast_n = 0;
     gc_size = 0;
-    GcRange r[6 * 16];
+    GcRange r[6 * 16 + GL_MAX];
     int n = 0;
     // a margin before each bound range (LARECOMP_GMARGIN bytes, 4 KB): the lighting's shaders read a header 0x100-0x200
     // bytes before the light list's bound address (the light count: ~950k reads a frame outside the tables - zero
@@ -3875,24 +3909,34 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
         else r[m++] = r[i];
     }
     if (m > GMAP_MAX) m = GMAP_MAX;
-    // The learned ranges (reached through pointers - gres_learn): newest first while table slots remain, never
-    // expanding a storing range's write-back or collapsing unrelated heap regions into one multi-megabyte span.
-    for (int i = gl_n - 1; i >= 0 && m < GMAP_MAX - 2; i--) {
-        uint64_t lo = gl_learned[i].lo, hi = gl_learned[i].hi;
-        bool covered = false;
-        for (int k = 0; k < m && !covered; k++) {
-            if (r[k].lo <= lo && hi <= r[k].hi) { covered = true; break; }
-            if (!r[k].store && lo <= r[k].hi + 4096 && hi + 4096 >= r[k].lo) {
-                if (lo < r[k].lo) r[k].lo = lo;
-                if (hi > r[k].hi) r[k].hi = hi;
-                covered = true;
+    // Learned ranges: first pass adds all storing ranges (the compute-written light lists) so they are
+    // ALWAYS present in every table. Second pass adds the most recently learned load ranges while slots remain.
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = gl_n - 1; i >= 0 && m < GMAP_MAX - 2; i--) {
+            if ((pass == 0) != gl_learned[i].store) continue;
+            uint64_t lo = gl_learned[i].lo, hi = gl_learned[i].hi;
+            bool covered = false;
+            for (int k = 0; k < m && !covered; k++) {
+                if (r[k].lo <= lo && hi <= r[k].hi) { covered = true; break; }
             }
+            if (covered) continue;
+            int k = m++;
+            while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }
+            r[k] = (GcRange){lo, hi, gl_learned[i].store, true};
         }
-        if (covered) continue;
-        int k = m++;
-        while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }
-        r[k] = (GcRange){lo, hi, false, true};
     }
+    // Merge any overlapping or adjacent ranges to strictly maintain non-overlapping monotonic order for binary search
+    int out = 0;
+    for (int i = 0; i < m; i++) {
+        if (out && r[i].lo <= r[out - 1].hi) {
+            if (r[i].hi > r[out - 1].hi) r[out - 1].hi = r[i].hi;
+            if (r[i].store) r[out - 1].store = true;
+            if (!r[i].learned) r[out - 1].learned = false;
+        } else {
+            r[out++] = r[i];
+        }
+    }
+    m = out;
     uint64_t total = 0;
     for (int i = 0; i < m; i++) total += (r[i].hi - r[i].lo + 255) & ~255ull;
     {   // LARECOMP_LOG_GCOPY=n: every copy of one frame in n (which stages, storing or not, the ranges) - diagnostics
@@ -3921,8 +3965,9 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
         gmap_tab[i * 4 + 0] = (uint32_t)r[i].lo;
         gmap_tab[i * 4 + 1] = (uint32_t)len;
         gmap_tab[i * 4 + 2] = (uint32_t)(off >> 2);
-        if (r[i].store && !gres_init() && gc_nback < 256)
+        if (r[i].store && !gres_init() && gc_nback < 256) {
             gc_back[gc_nback++] = (GcBack){(const uint8_t *)gc_span.ptr + off, HEAP_BASE + r[i].lo, len, seq, NULL, NULL};
+        }
         off += (len + 255) & ~255ull;
     }
     pthread_mutex_unlock(&gc_lock);
@@ -4273,7 +4318,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     static int planned = -1;
     if (planned < 0) {
         const char *e = getenv("LARECOMP_VK_DESCRIPTOR_PLAN");
-        planned = e && atoi(e) != 0;  // experimental: keep the measured stable path as the default
+        planned = !e || atoi(e) != 0;
     }
     const DescriptorPlan *plan = &p->descriptor_plans[set];
 #endif
@@ -5288,6 +5333,7 @@ static void draw_(CmdRec *r, bool indexed) {
         }
     }
     if (!nruns) { run_at[0] = 0; run_n[0] = inst; nruns = 1; run_gold[0] = false; }
+    if (!in_pass) { begin_pass(); cb = vk_cmd(); }
     for (int ri = 0; ri < nruns; ri++) {
         if (nruns > 1 || run_gold[0]) {  // this run's tint: a fragment set of its own
             float rtint[8] = {0};
@@ -5743,7 +5789,15 @@ static VkImageView smaa_lut(int i) {
 static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const void *pc,
                       uint32_t pc_bytes, bool clear, bool nearest0) {
     VkPipeline pipe = post_pipeline(fs);  // (before the rendering begins: created inside it, the NVIDIA driver crashed)
-    vk_full_barrier(cb);
+    VkMemoryBarrier2 mb = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+    };
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &di);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = post_view(dst),
                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                                     .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -5776,7 +5830,9 @@ static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *src
 // size in the window (its crop is drawn into the viewport).
 static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, double oh_d) {
     VkImageView v = raw_view(b);
+    bool fxaa = g_settings.antialias == AA_FXAA;
     bool smaa = g_settings.antialias == AA_SMAA;
+    bool taa  = g_settings.antialias == AA_TAA;
     uint32_t ow = (uint32_t)lround(ow_d), oh = (uint32_t)lround(oh_d);
     if (ow > 16384) ow = 16384;
     if (oh > 16384) oh = 16384;
@@ -5784,10 +5840,18 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     bool fsr = g_settings.upscaler == UPSCALE_FSR1 && up;
     bool sgsr = g_settings.upscaler == UPSCALE_SGSR1 && up;  // (Android: Snapdragon GSR 1, one pass)
     bool sgsr2 = g_settings.upscaler == UPSCALE_SGSR2 && up; // (Qualcomm Snapdragon GSR 2, temporal)
-    if (!smaa && !fsr && !sgsr && !sgsr2) return v;
+    if (!fxaa && !smaa && !taa && !fsr && !sgsr && !sgsr2) return v;
     extern void vk_frame_suspend(void);
     extern void vk_frame_resume(void);
     vk_frame_suspend();
+    if (fxaa) {
+        float w = (float)b->width, h = (float)b->height;
+        float m[8] = {1.0f / w, 1.0f / h, w, h};
+        TexBackend *out = post_image(2, b->width, b->height);
+        VkImageView in[1] = {v};
+        post_pass(cb, "fxaa.frag", in, 1, out, m, 32, false, false);
+        v = post_view(out);
+    }
     if (smaa) {  // SMAA 1x: luma edges -> blending weights -> neighbourhood blending
         float w = (float)b->width, h = (float)b->height;
         float m[8] = {1.0f / w, 1.0f / h, w, h};
@@ -5801,13 +5865,69 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         post_pass(cb, "smaa_blend.frag", bi, 2, out, m, 32, false, false);
         v = post_view(out);
     }
+    if (taa) {
+        extern VkImageView fg_scene_depth_view(void);
+        extern bool fg_reproject_matrix(float mp[16]);
+        VkImageView dv = fg_scene_depth_view();
+        float mp[16];
+        bool have_reproj = fg_reproject_matrix(mp);
+        if (!dv || !have_reproj) {
+            float w = (float)b->width, h = (float)b->height;
+            float m[8] = {1.0f / w, 1.0f / h, w, h};
+            TexBackend *out = post_image(2, b->width, b->height);
+            VkImageView in[1] = {v};
+            post_pass(cb, "fxaa.frag", in, 1, out, m, 32, false, false);
+            v = post_view(out);
+        } else if (!sgsr2) {
+            float iw = (float)b->width, ih = (float)b->height;
+            TexBackend *mda = post_image(5, b->width, b->height);
+            static int taa_hist_idx;
+            TexBackend *prev_hist = post_image(6 + taa_hist_idx, b->width, b->height);
+            TexBackend *curr_hist = post_image(6 + (taa_hist_idx ^ 1), b->width, b->height);
+
+            static uint32_t last_tw, last_th;
+            bool size_changed = (b->width != last_tw || b->height != last_th);
+            last_tw = b->width; last_th = b->height;
+
+            Sgsr2Params pc = {0};
+            pc.renderSize[0] = iw;
+            pc.renderSize[1] = ih;
+            pc.outputSize[0] = iw;
+            pc.outputSize[1] = ih;
+            pc.renderSizeRcp[0] = 1.0f / iw;
+            pc.renderSizeRcp[1] = 1.0f / ih;
+            pc.outputSizeRcp[0] = 1.0f / iw;
+            pc.outputSizeRcp[1] = 1.0f / ih;
+            pc.jitterOffset[0] = 0.0f;
+            pc.jitterOffset[1] = 0.0f;
+            pc.scaleRatio[0] = 1.0f;
+            pc.scaleRatio[1] = 1.0f;
+            pc.cameraFovAngleHor = 0.41421356f;
+            pc.minLerpContribution = 0.05f;
+            pc.reset = size_changed ? 1.0f : 0.0f;
+            pc.bSameCamera = (!size_changed) ? 1 : 0;
+
+            for (int col = 0; col < 4; col++)
+                for (int row = 0; row < 4; row++)
+                    pc.clipToPrevClip[col * 4 + row] = mp[row * 4 + col];
+
+            post_pass(cb, "sgsr2_convert.frag", &dv, 1, mda, &pc, sizeof pc, false, true);
+
+            VkImageView up_srcs[3] = {v, post_view(prev_hist), post_view(mda)};
+            post_pass(cb, "sgsr2_upscale.frag", up_srcs, 3, curr_hist, &pc, sizeof pc, false, false);
+
+            taa_hist_idx ^= 1;
+            v = post_view(curr_hist);
+        }
+    }
     if (fsr) {
         float iw = (float)b->width, ih = (float)b->height;
         TexBackend *e = post_image(3, ow, oh), *r = post_image(4, ow, oh);
         float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
         VkImageView ei[3] = {v};
         post_pass(cb, "easu.frag", ei, 1, e, pe, 32, false, false);
-        float pr[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh};  // (sharpness 0.2 stops: AMD's default)
+        float stops = (1.0f - g_settings.sharpness) * 2.0f;
+        float pr[8] = {exp2f(-stops), 0, 0, 0, (float)ow, (float)oh};
         VkImageView ri_[3] = {post_view(e)};
         post_pass(cb, "rcas.frag", ri_, 1, r, pr, 32, false, false);
         v = post_view(r);
@@ -5828,17 +5948,11 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         TexBackend *prev_hist = post_image(6 + hist_idx, ow, oh);
         TexBackend *curr_hist = post_image(6 + (hist_idx ^ 1), ow, oh);
 
-#ifdef __ANDROID__
         extern VkImageView fg_scene_depth_view(void);
         extern bool fg_reproject_matrix(float mp[16]);
         VkImageView dv = fg_scene_depth_view();
         float mp[16];
         bool have_reproj = fg_reproject_matrix(mp);
-#else
-        VkImageView dv = VK_NULL_HANDLE;
-        float mp[16];
-        bool have_reproj = false;
-#endif
 
         static uint32_t last_w, last_h, last_ow, last_oh;
         bool size_changed = (b->width != last_w || b->height != last_h || ow != last_ow || oh != last_oh);
@@ -5888,11 +6002,11 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     vk_frame_resume();
     {
         static uint32_t piw, pih, pow_, poh;
-        static int psm = -1, pfs = -1, psg = -1, psg2 = -1;
-        if (b->width != piw || b->height != pih || ow != pow_ || oh != poh || smaa != psm || fsr != pfs || sgsr != psg || sgsr2 != psg2)
-            LOG("[post] %ux%u%s%s%s%s -> %ux%u\n", b->width, b->height, smaa ? " smaa" : "", fsr ? " fsr1" : "",
+        static int pfx = -1, psm = -1, pta = -1, pfs = -1, psg = -1, psg2 = -1;
+        if (b->width != piw || b->height != pih || ow != pow_ || oh != poh || fxaa != pfx || smaa != psm || taa != pta || fsr != pfs || sgsr != psg || sgsr2 != psg2)
+            LOG("[post] %ux%u%s%s%s%s%s%s -> %ux%u\n", b->width, b->height, fxaa ? " fxaa" : "", smaa ? " smaa" : "", taa ? " taa" : "", fsr ? " fsr1" : "",
                 sgsr ? " sgsr1" : "", sgsr2 ? " sgsr2" : "", ow, oh);
-        piw = b->width; pih = b->height; pow_ = ow; poh = oh; psm = smaa; pfs = fsr; psg = sgsr; psg2 = sgsr2;
+        piw = b->width; pih = b->height; pow_ = ow; poh = oh; pfx = fxaa; psm = smaa; pta = taa; pfs = fsr; psg = sgsr; psg2 = sgsr2;
     }
     return v;
 }
@@ -6265,7 +6379,10 @@ void backend_execute(uint64_t handle) {
 #endif
     PROF_T0();
 #ifdef __ANDROID__
+    pthread_mutex_lock(&seq_lock);
+    prev_work_seq = work_seq;
     game_pending = true;  // (renderer_fence_seq)
+    pthread_mutex_unlock(&seq_lock);
 #endif
     exec_list(handle, 0);
     PROF_ADD(prof_exec);

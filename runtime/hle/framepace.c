@@ -28,36 +28,32 @@ uint64_t g_frame_steps_late;             // (stats) frames that advanced more th
 // 60 for one frame in eight (2026-10-23, the stock driver at 23 ms of GPU a frame: slow motion in each) - after
 // LASRecomp beta_5 cb9bc8d, "a real 30".
 static void fixed_30(void) {
-    static uint64_t obj;
-    static int saved_min = -1, saved_max = -1;
     Cpu *c = kernel_current_cpu();
     uint64_t sys = c ? c->x[23] : 0;
     if (!sys) return;
-    uint8_t *min = (uint8_t *)(uintptr_t)(sys + 0x4e2);
-    uint8_t *max = (uint8_t *)(uintptr_t)(sys + 0x4e3);
-    if (saved_min < 0 || obj != sys) {
-        saved_min = *min > 0 ? *min : 1;
-        saved_max = *max >= saved_min ? *max : 2;
-        obj = sys;
-    }
+    // In sys (main_000.c:8663, 0x01000000 at +0x4e0):
+    //   +0x4e0 = extra world updates per frame (0 = 60 fps [1 tick/frame], 1 = 30 fps [2 ticks/frame])
+    //   +0x4e1 = swap_interval - 1             (0 = 60 fps [interval 1],   1 = 30 fps [interval 2])
+    //   +0x4e2 = min (0 = 60 fps)
+    //   +0x4e3 = max (1 = 30 fps)
+    uint8_t *min   = (uint8_t *)(uintptr_t)(sys + 0x4e2);
+    uint8_t *max   = (uint8_t *)(uintptr_t)(sys + 0x4e3);
     extern bool vk_pace_holds_30(void);
     bool auto_hold = g_settings.fps_mode == 0 && vk_pace_holds_30();
     if (g_settings.fps_mode == 1 || auto_hold) {
-        if (*min != (uint8_t)saved_max || *max != (uint8_t)saved_max) {
-            *min = (uint8_t)saved_max;
-            *max = (uint8_t)saved_max;
-            LOG("[pace] %s: the game's interval clamped to [%u, %u]\n", auto_hold ? "auto holds 30" : "frame rate 30", *min, *max);
+        if (*min != 1 || *max != 1) {
+            *min = 1;
+            *max = 1;
+            LOG("[pace] %s: the game's interval clamped to [1, 1] (30 fps)\n", auto_hold ? "auto holds 30" : "frame rate 30");
         }
-    } else if (g_settings.fps_mode == 2) {
-        if (*min != (uint8_t)saved_min || *max != (uint8_t)saved_min) {
-            *min = (uint8_t)saved_min;
-            *max = (uint8_t)saved_min;
-            LOG("[pace] frame rate 60: the game's interval clamped to [%u, %u]\n", *min, *max);
+    } else {
+        // Auto (0) or 60 fps (2): allow 60 fps (min=0) and allow 30 fps if GPU is overloaded (max=1)
+        // so that if framerate drops to 30 fps (e.g. in 4K), 2 steps/frame run and game does NOT slow down!
+        if (*min != 0 || *max != 1) {
+            *min = 0;
+            *max = 1;
+            LOG("[pace] the game's interval set to [0, 1] (dynamic 60/30 fps, no slow-motion)\n");
         }
-    } else if (*min != (uint8_t)saved_min || *max != (uint8_t)saved_max) {
-        *min = (uint8_t)saved_min;
-        *max = (uint8_t)saved_max;
-        LOG("[pace] the game's interval back to [%u, %u]\n", *min, *max);
     }
 }
 #endif
@@ -65,6 +61,10 @@ static void fixed_30(void) {
 uint32_t rt_frame_steps(uint32_t interval) {
 #ifdef __ANDROID__
     fixed_30();
+    if (g_settings.fps_mode == 1) return 2;
+    // For mode 0 (Auto) and mode 2 (60 fps): return the game's actual interval (1 at 60 fps, 2 at 30 fps)
+    // so gameplay speed is ALWAYS 1.0x real time, even when rendering at 4K drops to 30 fps!
+    return interval;
 #endif
     static int on = -1, max_steps, forced;
     if (on < 0) {

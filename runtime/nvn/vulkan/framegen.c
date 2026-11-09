@@ -524,7 +524,12 @@ bool fg_frame_wanted(uint64_t frame, TexBackend *fin) {
         static float asked = -1;
         static int env = -2;
         if (env == -2) env = getenv("LARECOMP_FG_HZ") ? atoi(getenv("LARECOMP_FG_HZ")) : -1;
+#ifdef __ANDROID__
+        extern bool plat_is_snapdragon_8_elite(void);
+        float want = env > 0 ? (float)env : (plat_is_snapdragon_8_elite() || g_settings.frame_gen_120) ? 120.0f : 60.0f;
+#else
         float want = env > 0 ? (float)env : g_settings.frame_gen_120 ? 120.0f : 60.0f;
+#endif
         if (want != asked) {
             extern void vk_surface_frame_rate(float hz);
             asked = want;
